@@ -1,0 +1,582 @@
+# Admin API reference
+
+The admin API creates, inspects, edits, extends, deletes and lists Ballots. It lives under `/admin` on the same host and port as everything else ([ADR 0001](../adr/0001-admin-api-shares-public-port.md)); under a [sub-path](../guides/deployment.md#under-a-sub-path) under the prefix, e.g. `/polls/admin`. Every request needs an **Admin Token**.
+
+All examples were run against a real `vota serve` with `public_base_url = "http://localhost:8080/"`. Responses are shown pretty-printed (the server sends compact JSON with keys in alphabetical order).
+
+- [Conventions](#conventions)
+- [Authentication](#authentication)
+- [`POST /admin/ballots`: create a Ballot](#post-adminballots-create-a-ballot)
+- [`GET /admin/ballots/{id}`: fetch one Ballot](#get-adminballotsid-fetch-one-ballot)
+- [`PATCH /admin/ballots/{id}`: edit a Ballot](#patch-adminballotsid-edit-a-ballot)
+- [`POST /admin/ballots/{id}/extend`: extend the Voting Deadline](#post-adminballotsidextend-extend-the-voting-deadline)
+- [`DELETE /admin/ballots/{id}`: delete a Ballot](#delete-adminballotsid-delete-a-ballot)
+- [`GET /admin/ballots`: list Ballots with results](#get-adminballots-list-ballots-with-results)
+- [The admin view of a Ballot](#the-admin-view-of-a-ballot)
+- [Errors](#errors)
+
+## Conventions
+
+- **Request bodies** are JSON objects with `Content-Type: application/json`. Anything else gets `415` with an empty body. A body that is not valid JSON (truncated, empty, not UTF-8, trailing data after the object) gets `422 invalid_json`. Unknown fields are rejected with `422 invalid_input`. Bodies over 64 KiB are refused with `413`.
+- **Ballots are identified by their internal ID**, a positive integer, never by their Ballot Token. The ID in the path must be written literally, the way the server writes it: digits only, no sign, no leading zero, no percent-encoding. Anything else is the same `404` as an unknown ID.
+- **Timestamps** in requests are RFC 3339 *with an explicit offset* (`Z` or `±hh:mm`), e.g. `2026-12-01T12:00:00+01:00`. They are converted to UTC and stored to the millisecond. Responses always use UTC with a `Z` suffix, with fractional seconds only when there are any (`2026-12-01T10:00:00.123Z`).
+- **Text** fields are Unicode-NFC-normalised and trimmed before they are checked, so the stored value is the normalised one. See [Trust boundary and sanitization](../concepts/trust-boundary.md) for the full rules.
+- **Purged Ballots** (Purge Date at or before now) don't exist for any endpoint, even before the purge sweep has deleted them.
+
+The shell examples assume the Admin Token is in `$TOKEN` (see [Admin Tokens](../concepts/admin-tokens.md)):
+
+```sh
+TOKEN=$(vota --config vota.toml admin-token create --label docs)
+```
+
+## Authentication
+
+Send the Admin Token as a bearer token on every request under `/admin`, including unknown paths:
+
+```http
+Authorization: Bearer vta_…
+```
+
+The scheme may be written in any case (`Bearer`, `bearer`, `BEARER`), followed by one space and the token. A missing, malformed, unknown, revoked or expired Admin Token gets the same bare response, so the response never reveals which one it was:
+
+```sh
+curl -s -i http://localhost:8080/admin/ballots
+```
+
+```http
+HTTP/1.1 401 Unauthorized
+www-authenticate: Bearer
+x-content-type-options: nosniff
+content-length: 0
+```
+
+### Rate limit on failed Admin Token checks
+
+Each `401` counts against the client IP (resolved as for the voter rate limit: the TCP peer, or `X-Forwarded-For` behind a [trusted proxy](configuration.md#trusted_proxies); IPv6 per /64). A client may have [`rate_limit.admin_failed_auth`](configuration.md#rate_limit) failed checks (default 10) per [`rate_limit.admin_window`](configuration.md#rate_limit) (default 10 minutes, a fixed window from its first failure). After that, **every** admin request from it gets `429` until the window ends, even with a valid Admin Token, and its token isn't even checked:
+
+```http
+HTTP/1.1 429 Too Many Requests
+content-type: application/json
+content-security-policy: default-src 'none'; style-src 'sha256-fwc9WGoqADQdm5haKHxoYVOpKWUbs7FdN0iDsZxLtaE='; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+x-content-type-options: nosniff
+referrer-policy: no-referrer
+cache-control: no-store
+retry-after: 60
+
+{"error":"too_many_requests"}
+```
+
+Requests that pass the check never count, and this budget is separate from the voter routes' budget for failed Ballot Token lookups. An unreadable `X-Forwarded-For` from a trusted proxy gets `400` `{"error":"bad_request","message":"the X-Forwarded-For header could not be read"}`, counted nowhere. Both refusals carry the [error-response headers](../concepts/security-headers.md#error-responses). An admin who shares an IP address with a client that is guessing tokens is locked out with it for the window; lower `admin_window` or raise `admin_failed_auth` if that is a concern.
+
+### Audit log
+
+Every admin request is logged as one event, without the Admin Token itself:
+
+```text
+INFO vota::admin_audit: admin request token_id=1 method=PATCH route=/admin/ballots/{id} status=422 client_ip=127.0.0.1
+```
+
+- `token_id` is the Admin Token's ID as [`admin-token list`](cli.md#admin-token-list) shows it, present only when the token was accepted;
+- `route` is the route template (`/admin/ballots/{id}`; `/admin`, `/admin/` or `/admin/{*rest}` for unknown paths; with the base path in front under a sub-path), never the request's path or query. `method` is the standard method's name, or `OTHER` for any other method;
+- `client_ip` is resolved as for the rate limit. It is absent when it can't be resolved: on the `400` for an unreadable `X-Forwarded-For`. `status` is the response's status.
+
+Failed checks are summed up per client IP in two warnings: one at its first failure in a window, one when it spends the budget:
+
+```text
+WARN vota::admin_audit: failed Admin Token check; further ones from this client within 1m are only logged when it reaches the limit client_ip=203.0.113.9
+WARN vota::admin_audit: too many failed Admin Token checks; this client is refused (429) on the admin API until its window of 1m ends client_ip=203.0.113.9 failures=3
+```
+
+Admin Tokens, Ballot Tokens, Voter References and request bodies are never logged. The events have the target `vota::admin_audit`, so they can be selected with `RUST_LOG` (e.g. `RUST_LOG=info,vota::admin_audit=warn` keeps only the warnings). Each Admin Token also records when it was last accepted, to the minute: see [`admin-token list`](cli.md#admin-token-list).
+
+## `POST /admin/ballots`: create a Ballot
+
+Creates one Ballot and answers `201 Created` with its [admin view](#the-admin-view-of-a-ballot), which includes the Ballot Token and the public `url` to hand to the voter.
+
+### Request fields
+
+| Field             | Type                     | Required | Default                                         | Rules |
+| ----------------- | ------------------------ | -------- | ----------------------------------------------- | ----- |
+| `title`           | string                   | yes      |                                                 | Single-line text, 1–200 characters. |
+| `description`     | string                   | no       | none                                            | Limited Markdown, 1–10 000 characters. May span lines (`\r\n` and `\r` become `\n`; tabs allowed). Stored and returned as source; rendered only on the voting page. |
+| `options`         | array of `{"label": string}` | yes  |                                                 | At least 2 Options, in display order. Each `label` is single-line text, 1–200 characters. Labels must be unique (exact match after normalisation). No upper count other than the 64 KiB body limit. |
+| `choice_mode`     | `"single"` or `"multiple"` | no     | `"single"`                                      | Exact match: no trimming, no case folding. |
+| `submission_mode` | `"final"` or `"editable"`  | no     | `"final"`                                       | Exact match. |
+| `voting_deadline` | RFC 3339 string          | yes      |                                                 | Must lie in the future and no later than now + [`max_date_horizon`](configuration.md#max_date_horizon) (default 1 year). |
+| `purge_date`      | RFC 3339 string          | no       | `voting_deadline` + [`default_purge_gap`](configuration.md#default_purge_gap) (4 weeks) | If given: in the future, no later than now + `max_date_horizon`, and not before `voting_deadline` (equal is allowed). The computed default is not capped by the horizon. |
+| `fallback`        | array of strings         | no       | no Fallback                                     | **Option labels**, not IDs: the Options get their IDs only now. Each label is normalised like an Option label and must match one of this Ballot's Options. No duplicates. Must obey the Choice Mode: exactly one label for single choice, one or more for multiple choice. `[]` is rejected. |
+| `group`           | string                   | no       | none                                            | Single-line text, 1–200 characters. |
+| `voter_reference` | string                   | no       | none                                            | Single-line text, 1–200 characters. Unique within its Group: a second Ballot with the same Group and Voter Reference is a `409`. Without a Group it is not constrained. |
+| `theme`           | string                   | no       | `"classic"`                                     | `^[a-z0-9][a-z0-9-]{0,63}$`, exact match, and a Theme of that name must exist (built-in or in the theme folder). |
+| `accent_color`    | string                   | no       | none (the Theme's own accent)                   | `#rrggbb`, exactly `^#[0-9a-fA-F]{6}$`. Stored lowercase. |
+| `logo`            | string                   | no       | none                                            | Same name rule as `theme`. A logo of that name must exist in the logo folder. |
+
+"Single-line text" means NFC-normalised, trimmed, non-empty, free of control and invisible characters (Unicode general categories Cc, Cf such as bidi and zero-width characters, Co private use, Cn unassigned, noncharacters, fillers, variation selectors, U+2800 and U+FFFC), with at most four combining marks on one base character. Lengths count Unicode characters after normalisation. An optional field may be left out, but `null` is rejected on creation (`"wrong type or value"`).
+
+### Minimal example
+
+```sh
+curl -s -X POST http://localhost:8080/admin/ballots \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"title": "Lunch on Friday?", "options": [{"label": "Pizza"}, {"label": "Sushi"}], "voting_deadline": "2026-12-01T12:00:00+01:00"}'
+```
+
+`201 Created`:
+
+```json
+{
+  "accent_color": null,
+  "choice_mode": "single",
+  "created_at": "2026-10-17T10:51:05.876Z",
+  "description": null,
+  "fallback": null,
+  "group": null,
+  "id": 1,
+  "logo": null,
+  "options": [
+    { "id": "9AP_l_daq5c", "label": "Pizza" },
+    { "id": "c8lVx4rmBwQ", "label": "Sushi" }
+  ],
+  "purge_date": "2026-12-29T11:00:00Z",
+  "response": null,
+  "result": null,
+  "status": "unanswered",
+  "submission_mode": "final",
+  "theme": "classic",
+  "title": "Lunch on Friday?",
+  "token": "tTzFz9vEGN93JsiOCem9vQ",
+  "url": "http://localhost:8080/b/tTzFz9vEGN93JsiOCem9vQ",
+  "voter_reference": null,
+  "voting_deadline": "2026-12-01T11:00:00Z"
+}
+```
+
+The deadline was given in `+01:00` and is returned in UTC. The Purge Date defaulted to four weeks after it.
+
+### Full example
+
+`ballot.json`:
+
+```json
+{
+  "title": "Team offsite: which date works?",
+  "description": "Pick **every** date you can make.\n\nDetails: [wiki](https://wiki.example.org/offsite)",
+  "options": [
+    { "label": "Thursday 14 January" },
+    { "label": "Friday 15 January" },
+    { "label": "Saturday 16 January" }
+  ],
+  "choice_mode": "multiple",
+  "submission_mode": "editable",
+  "voting_deadline": "2026-12-20T18:00:00+01:00",
+  "purge_date": "2027-01-31T00:00:00Z",
+  "fallback": ["Friday 15 January"],
+  "group": "offsite-2027",
+  "voter_reference": "alice@example.org",
+  "theme": "dark",
+  "accent_color": "#E07A1F"
+}
+```
+
+```sh
+curl -s -X POST http://localhost:8080/admin/ballots \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d @ballot.json
+```
+
+`201 Created`:
+
+```json
+{
+  "accent_color": "#e07a1f",
+  "choice_mode": "multiple",
+  "created_at": "2026-10-17T10:51:05.902Z",
+  "description": "Pick **every** date you can make.\n\nDetails: [wiki](https://wiki.example.org/offsite)",
+  "fallback": [
+    { "id": "otO0JCJbJ88", "label": "Friday 15 January" }
+  ],
+  "group": "offsite-2027",
+  "id": 2,
+  "logo": null,
+  "options": [
+    { "id": "asWoSUcc7Ts", "label": "Thursday 14 January" },
+    { "id": "otO0JCJbJ88", "label": "Friday 15 January" },
+    { "id": "kDH9L13ZxRg", "label": "Saturday 16 January" }
+  ],
+  "purge_date": "2027-01-31T00:00:00Z",
+  "response": null,
+  "result": null,
+  "status": "unanswered",
+  "submission_mode": "editable",
+  "theme": "dark",
+  "title": "Team offsite: which date works?",
+  "token": "fqps4Y5QXH9JOgytT1czCw",
+  "url": "http://localhost:8080/b/fqps4Y5QXH9JOgytT1czCw",
+  "voter_reference": "alice@example.org",
+  "voting_deadline": "2026-12-20T17:00:00Z"
+}
+```
+
+### Errors
+
+`422 invalid_input` names the first offending field (see [Errors](#errors) for all messages). `409 duplicate_voter_reference` means another live Ballot in the same Group already has this Voter Reference. A Ballot whose Purge Date has passed no longer blocks it, even before the sweep:
+
+```json
+{
+  "error": "duplicate_voter_reference",
+  "message": "another Ballot in this Group already has this Voter Reference"
+}
+```
+
+Because of this rule, a creation script that sets a Group and a Voter Reference on every Ballot is safe to re-run: Ballots that already exist give `409`, and no duplicate is created.
+
+## `GET /admin/ballots/{id}`: fetch one Ballot
+
+Answers `200` with the [admin view](#the-admin-view-of-a-ballot), or `404 {"error":"not_found"}` if there is no live Ballot with this ID.
+
+```sh
+curl -s http://localhost:8080/admin/ballots/2 -H "Authorization: Bearer $TOKEN"
+```
+
+The response has the same shape as the creation response above.
+
+## `PATCH /admin/ballots/{id}`: edit a Ballot
+
+The body holds any subset of the creation fields. Fields you leave out keep their current values. The rules are applied to the Ballot *as the edit leaves it*, and the whole result is validated like a new Ballot. Answers `200` with the admin view.
+
+### What may be edited when
+
+- **Content edit**: the body names any field other than `group` and `voter_reference`. This is allowed only while the Ballot is **Unanswered**:
+  - once it has a Response (Answered): `409 already_answered`;
+  - once its Voting Deadline has passed without a Response and its Fallback has applied (Auto-fallback): `409 fallback_applied`. [Extend](#post-adminballotsidextend-extend-the-voting-deadline) the deadline first; that makes the Ballot Unanswered again, and content edits are allowed again.
+
+  Either way nothing changes. The check is made before the values are checked, so an edit of such a Ballot with an invalid value (an empty title, say) still gets the `409`. A body that doesn't have the right shape is refused first, with `422`: bad JSON, an unknown field, a wrong JSON type, or `null` where it isn't allowed. The check is made again in the same write as the edit, at the request's time, so an edit arriving exactly at the deadline gets `409 fallback_applied` too. A Ballot whose deadline passed **without** a Fallback is still Unanswered and stays editable; a new `voting_deadline` reopens it, and a new `fallback` applies at once: the Ballot becomes Auto-fallback, with that Fallback as its result, and further content edits get `409 fallback_applied`.
+- **Bookkeeping edit**: the body names only `group` and/or `voter_reference`, or nothing at all (`{}` answers `200` with the Ballot unchanged). This is allowed at any time, also on an Answered or Auto-fallback Ballot, because the voter never sees these fields. It does not count as a change of the Ballot for a Response being submitted at the same moment.
+
+Whether an edit is a content edit depends on which fields are present, not on whether their values change. `{"title": "<the same title>"}` is still a content edit.
+
+### Field semantics on edit
+
+| Field                                           | Absent        | `null`                         | Value |
+| ----------------------------------------------- | ------------- | ------------------------------ | ----- |
+| `title`, `choice_mode`, `submission_mode`       | kept          | `422 wrong type or value`      | as on creation |
+| `theme`                                         | kept (not re-checked, even if the Theme has since been removed) | `422` (name `"classic"` to go back to the default) | must exist now |
+| `description`, `group`, `voter_reference`, `accent_color` | kept | removes the value             | as on creation |
+| `logo`                                          | kept (not re-checked) | removes the logo       | must exist now |
+| `fallback`                                      | kept: re-resolved by label against the resulting Options and re-checked against the resulting Choice Mode | removes the Fallback | labels of the resulting Options |
+| `options`                                       | kept, with their IDs | `422`                  | **replaces all Options**; every Option gets a new ID |
+| `voting_deadline`                               | kept          | `422`                          | in the future, within the horizon. It may be earlier than the current one (the Ballot is Unanswered, as for every content edit). |
+| `purge_date`                                    | kept, or shifted when the new `voting_deadline` passes it (see below) | `422` | in the future, within the horizon, not before the resulting Voting Deadline |
+
+When `voting_deadline` moves past the current Purge Date and no `purge_date` is given, the Purge Date moves to the new deadline plus the current gap between the two dates. See [Deadlines, Fallback and Purge](../concepts/deadlines-fallback-purge.md). The shifted Purge Date must lie within the horizon too (no later than now + [`max_date_horizon`](configuration.md#max_date_horizon)). If it would not, the edit is refused with a `422` naming `voting_deadline`, since moving the deadline is what shifts it, and nothing changes. Give a `purge_date` within the horizon in the same request instead. (An [extension](#post-adminballotsidextend-extend-the-voting-deadline) shifts the Purge Date without this cap.)
+
+For example, with the default horizon of one year, a Ballot whose Purge Date lies 7 days after its deadline can't have its deadline moved to 360 days from now on its own:
+
+```http
+HTTP/1.1 422 Unprocessable Entity
+content-type: application/json
+x-content-type-options: nosniff
+
+{"error":"invalid_input","field":"voting_deadline","message":"would move the Purge Date further ahead than max_date_horizon allows; give a purge_date as well"}
+```
+
+If you replace the Options and the current Fallback names a label that no longer exists, the edit is rejected. Give the Fallback again (or `null`) in the same request:
+
+```json
+{
+  "error": "invalid_input",
+  "field": "fallback",
+  "message": "the Fallback's Options are no longer all Options of this Ballot; give the Fallback again"
+}
+```
+
+Read-only fields of the admin view (`id`, `token`, `url`, `created_at`, `status`, …) are unknown fields here: `{"field": null, "message": "unknown field"}`.
+
+### Examples
+
+A content edit of an Answered Ballot is refused:
+
+```sh
+curl -s -i -X PATCH http://localhost:8080/admin/ballots/2 \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"title": "New title"}'
+```
+
+```http
+HTTP/1.1 409 Conflict
+content-type: application/json
+x-content-type-options: nosniff
+
+{"error":"already_answered","message":"this Ballot has a Response; it can no longer be edited"}
+```
+
+So is a content edit of an Auto-fallback Ballot (here Ballot 3, created with the Options `Wed` and `Thu`, a deadline 20 seconds ahead and the Fallback `["Wed"]`, then left to pass the deadline):
+
+```sh
+curl -s -i -X PATCH http://localhost:8080/admin/ballots/3 \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"title": "New title"}'
+```
+
+```http
+HTTP/1.1 409 Conflict
+content-type: application/json
+x-content-type-options: nosniff
+
+{"error":"fallback_applied","message":"the Fallback of this Ballot has applied; extend the Voting Deadline to edit it again"}
+```
+
+After `POST /admin/ballots/3/extend` with a new deadline, the same request answers `200` with `"status":"unanswered"` and `"title":"New title"`.
+
+A bookkeeping edit of the Answered Ballot works (and of an Auto-fallback one, too):
+
+```sh
+curl -s -X PATCH http://localhost:8080/admin/ballots/2 \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"voter_reference": "alice@example.com"}'
+```
+
+`200` with the admin view, now with `"voter_reference": "alice@example.com"`.
+
+Setting a Fallback and an accent colour, then clearing them again (on Ballot 4, an Unanswered Ballot whose Options are `Wed` and `Thu`):
+
+```sh
+curl -s -X PATCH http://localhost:8080/admin/ballots/4 \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"fallback": ["Wed"], "accent_color": "#3366CC"}'
+# → … "accent_color":"#3366cc", … "fallback":[{"id":"vKsqzX4Cufs","label":"Wed"}] …
+
+curl -s -X PATCH http://localhost:8080/admin/ballots/4 \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"accent_color": null, "fallback": null, "description": null}'
+# → … "accent_color":null, … "fallback":null …
+```
+
+## `POST /admin/ballots/{id}/extend`: extend the Voting Deadline
+
+Moves the Voting Deadline later. Allowed at any time before the Purge Date, also on Answered Ballots. On a closed Ballot without a Response, it reopens voting (an Auto-fallback Ballot becomes Unanswered again). Answers `200` with the admin view.
+
+| Field             | Type            | Required | Rules |
+| ----------------- | --------------- | -------- | ----- |
+| `voting_deadline` | RFC 3339 string | yes      | In the future, no later than now + `max_date_horizon`, and **later than the current Voting Deadline**. |
+
+No other field is accepted (`purge_date` is an unknown field here). If the new deadline passes the Purge Date, the Purge Date shifts to keep its current gap. The shifted Purge Date is computed, so it is not capped by the horizon.
+
+```sh
+curl -s -X POST http://localhost:8080/admin/ballots/2/extend \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"voting_deadline": "2027-02-15T12:00:00Z"}'
+```
+
+The Ballot's deadline was `2026-12-20T17:00:00Z` and its Purge Date `2027-01-31T00:00:00Z`, a gap of 41 days 7 hours. The new deadline passes the Purge Date, so the Purge Date shifts. The `200` response is the full admin view; these are the fields that changed:
+
+```json
+"purge_date": "2027-03-28T19:00:00Z",
+"voting_deadline": "2027-02-15T12:00:00Z"
+```
+
+An earlier deadline is refused:
+
+```json
+{
+  "error": "invalid_input",
+  "field": "voting_deadline",
+  "message": "must be later than the current Voting Deadline"
+}
+```
+
+To move a deadline *earlier*, use `PATCH` while the Ballot is Unanswered (no Response, and no Fallback applied yet).
+
+## `DELETE /admin/ballots/{id}`: delete a Ballot
+
+Deletes the Ballot at once, with its Options, Response and Fallback, and frees its Voter Reference. Answers `204 No Content`. Afterwards the Ballot Token gets the voter surfaces' uniform not-found, exactly like a token that never existed.
+
+```sh
+curl -s -i -X DELETE http://localhost:8080/admin/ballots/2 -H "Authorization: Bearer $TOKEN"
+```
+
+```http
+HTTP/1.1 204 No Content
+x-content-type-options: nosniff
+```
+
+Deleting again, or deleting a purged Ballot, gives `404 {"error":"not_found"}`.
+
+## `GET /admin/ballots`: list Ballots with results
+
+Lists every matching live Ballot in creation order (internal ID ascending), each in the full [admin view](#the-admin-view-of-a-ballot) with its raw result. There is no pagination and no tally across Ballots.
+
+| Query parameter | Rules |
+| --------------- | ----- |
+| `group`         | Only Ballots in this Group. Sanitized exactly like a Group on creation (trimmed, NFC-normalised, 1–200 characters), so `?group=%20offsite%20` matches `offsite`. Matched literally (no patterns). |
+| `status`        | `unanswered`, `answered` or `auto_fallback`, compared with the Ballot Status derived at request time. |
+
+Each parameter may appear at most once. Unknown parameters are rejected. Without parameters, all live Ballots are listed. An empty result is `{"ballots": []}`, not an error.
+
+```sh
+curl -s 'http://localhost:8080/admin/ballots?group=offsite-2027&status=answered' \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "ballots": [
+    {
+      "accent_color": "#e07a1f",
+      "choice_mode": "multiple",
+      "created_at": "2026-10-17T10:51:05.902Z",
+      "description": "Pick **every** date you can make.\n\nDetails: [wiki](https://wiki.example.org/offsite)",
+      "fallback": [
+        { "id": "otO0JCJbJ88", "label": "Friday 15 January" }
+      ],
+      "group": "offsite-2027",
+      "id": 2,
+      "logo": null,
+      "options": [
+        { "id": "asWoSUcc7Ts", "label": "Thursday 14 January" },
+        { "id": "otO0JCJbJ88", "label": "Friday 15 January" },
+        { "id": "kDH9L13ZxRg", "label": "Saturday 16 January" }
+      ],
+      "purge_date": "2027-01-31T00:00:00Z",
+      "response": {
+        "answered_at": "2026-10-17T10:51:05.966Z",
+        "changed_at": "2026-10-17T10:51:05.966Z",
+        "option_ids": ["asWoSUcc7Ts"]
+      },
+      "result": {
+        "option_ids": ["asWoSUcc7Ts"],
+        "options": [
+          { "id": "asWoSUcc7Ts", "label": "Thursday 14 January" }
+        ],
+        "source": "response"
+      },
+      "status": "answered",
+      "submission_mode": "editable",
+      "theme": "dark",
+      "title": "Team offsite: which date works?",
+      "token": "fqps4Y5QXH9JOgytT1czCw",
+      "url": "http://localhost:8080/b/fqps4Y5QXH9JOgytT1czCw",
+      "voter_reference": "alice@example.org",
+      "voting_deadline": "2026-12-20T17:00:00Z"
+    }
+  ]
+}
+```
+
+## The admin view of a Ballot
+
+Every successful Ballot response (create, fetch, edit, extend, and each list entry) has these fields:
+
+| Field             | Type                      | Meaning |
+| ----------------- | ------------------------- | ------- |
+| `id`              | integer                   | Internal ID, used in admin paths. |
+| `token`           | string (22 chars)         | The Ballot Token: 128 random bits, base64url without padding. The voter's only credential. |
+| `url`             | string                    | `<public_base_url>b/<token>` (e.g. `https://example.org/polls/b/<token>` under a sub-path), built from configuration only (never from request headers). |
+| `title`           | string                    | As normalised on input. |
+| `description`     | string or `null`          | Markdown source, not HTML. |
+| `options`         | array of `{id, label}`    | In display order. `id` is 11 base64url characters (64 random bits), generated by the server. |
+| `choice_mode`     | `"single"` / `"multiple"` | |
+| `submission_mode` | `"final"` / `"editable"`  | |
+| `voting_deadline` | RFC 3339 UTC              | Exclusive: voting is closed *at* this instant. |
+| `purge_date`      | RFC 3339 UTC              | From this instant on the Ballot is gone. Never before `voting_deadline`. |
+| `created_at`      | RFC 3339 UTC              | |
+| `group`           | string or `null`          | Admin only, never shown to the voter. |
+| `voter_reference` | string or `null`          | Admin only, never shown to the voter. |
+| `theme`           | string                    | The Theme name as stored. If that Theme was removed from the theme folder since, the voting page uses `classic` instead, but this field still shows the stored name. |
+| `accent_color`    | `#rrggbb` or `null`       | Lowercase. |
+| `logo`            | string or `null`          | The logo name as stored (it may have been removed from the logo folder since; the page then shows none). |
+| `fallback`        | array of `{id, label}` or `null` | The Fallback's Options in Option order. |
+| `status`          | `"unanswered"` / `"answered"` / `"auto_fallback"` | Derived at request time; see [Ballot lifecycle](../concepts/ballot-lifecycle.md). |
+| `result`          | object or `null`          | `{source, option_ids, options}`: `source` is `"response"` or `"fallback"`, and `options` holds `{id, label}` of `option_ids`. `null` while there is no Response and the Fallback doesn't apply (yet). |
+| `response`        | object or `null`          | `{option_ids, answered_at, changed_at}`: `answered_at` is when the first Response came, `changed_at` when the latest did (equal on Final Ballots). |
+
+## Errors
+
+| Status | Body | When |
+| ------ | ---- | ---- |
+| `400` | `{"error":"bad_request","message":"the X-Forwarded-For header could not be read"}` | A trusted proxy passed on an unreadable `X-Forwarded-For` ([rate limit](#rate-limit-on-failed-admin-token-checks)). |
+| `401` | empty, `WWW-Authenticate: Bearer` | Missing, malformed, unknown, revoked or expired Admin Token, on every path under `/admin`. |
+| `404` | `{"error":"not_found"}` | No live Ballot with this ID: unknown, deleted, purged, malformed (`007`, `-1`, `abc`) or percent-encoded (`%31`). |
+| `404` | empty | Any other path under `/admin` (with a valid Admin Token), e.g. `/admin/nothing` or `/admin/ballots/`. |
+| `405` | empty, with `Allow` header | Wrong method on a known path, e.g. `PUT /admin/ballots/1`. |
+| `409` | `{"error":"already_answered","message":"this Ballot has a Response; it can no longer be edited"}` | Content edit of a Ballot that has a Response. (The [voter API](voter-api.md) uses the same code with its own message, `this Ballot already has a Response, which can't be changed`.) |
+| `409` | `{"error":"fallback_applied","message":"the Fallback of this Ballot has applied; extend the Voting Deadline to edit it again"}` | Content edit of an Auto-fallback Ballot (deadline passed without a Response, Fallback applied). |
+| `409` | `{"error":"duplicate_voter_reference","message":"another Ballot in this Group already has this Voter Reference"}` | Create or edit would give two live Ballots in one Group the same Voter Reference. |
+| `413` | `Failed to buffer the request body: length limit exceeded` (text/plain) | Body over 64 KiB. |
+| `415` | empty | `Content-Type` is not `application/json`. |
+| `422` | `{"error":"invalid_json","message":"the request body is not valid JSON"}` | The body is not valid JSON: truncated, empty, not UTF-8, or trailing data after the object (see below). |
+| `422` | `{"error":"invalid_input","field":…,"message":…}` | Validation failed (see below). |
+| `429` | `{"error":"too_many_requests"}`, `Retry-After` | The client spent its budget of failed Admin Token checks ([rate limit](#rate-limit-on-failed-admin-token-checks)). |
+| `500` | `{"error":"internal"}` | Internal error, without details, on every path under `/admin` (the Admin Token check included). It is logged without request data: no Admin Token, Ballot Token or Voter Reference. Carries the [error-page security headers](../concepts/security-headers.md#error-responses), like the voter API's. |
+
+### `422 invalid_json`
+
+A body that does not parse as JSON at all gets one fixed answer, without a `field`, whatever is wrong with it:
+
+```sh
+curl -s -X POST http://localhost:8080/admin/ballots -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"title": "Lunch?", "options": [{"label": "Piz'
+# {"error":"invalid_json","message":"the request body is not valid JSON"}
+```
+
+Valid JSON of the wrong shape (a wrong type, an unknown or missing field, `[]` instead of an object) is `invalid_input` with the field's path instead.
+
+### `422 invalid_input`
+
+```json
+{ "error": "invalid_input", "field": "options[1].label", "message": "duplicate Option label" }
+```
+
+`field` is a JSON path into the request body (`title`, `options[1].label`, `fallback[0]`), or a query parameter name. It is `""` when the body as a whole is wrong, and `null` for a field or parameter the endpoint doesn't know: the request's own names are never echoed, and neither is the rejected value. Only the first problem is reported. Possible messages:
+
+| Message | Fields |
+| ------- | ------ |
+| `missing` | any required field |
+| `unknown field` | `null`: a field (at any depth, e.g. `id` in an Option) or query parameter the endpoint doesn't know |
+| `wrong type or value` | wrong JSON type, or `null` where not allowed |
+| `must be a JSON object` | `""`: the body is not an object (e.g. `[]`) |
+| `must not be empty` | text fields, `group` filter |
+| `contains control, invisible or unassigned characters` | text fields |
+| `too many combining marks` | text fields (more than four on one base character) |
+| `too long` | text fields (200 characters; `description` 10 000) |
+| `at least two Options are required` | `options` |
+| `duplicate Option label` | `options[i].label` |
+| `not an Option of this Ballot` / `duplicate Option` | `fallback[i]` |
+| `select an Option` / `single choice: select exactly one Option` | `fallback` |
+| `the Fallback's Options are no longer all Options of this Ballot; give the Fallback again` | `fallback` (edit) |
+| `not an RFC 3339 timestamp with offset` | `voting_deadline`, `purge_date` |
+| `must lie in the future` | `voting_deadline`, `purge_date` |
+| `must not lie further ahead than max_date_horizon allows` | `voting_deadline`, `purge_date` |
+| `must not be before the Voting Deadline` | `purge_date` |
+| `would move the Purge Date further ahead than max_date_horizon allows; give a purge_date as well` | `voting_deadline` (edit without `purge_date`) |
+| `must be later than the current Voting Deadline` | `voting_deadline` (extend) |
+| `must be one of "single", "multiple"` | `choice_mode` |
+| `must be one of "final", "editable"` | `submission_mode` |
+| `must be one of "unanswered", "answered", "auto_fallback"` | `status` query parameter |
+| `must be given at most once` | repeated query parameter |
+| `must be a name of lowercase letters, digits and '-' (at most 64)` | `theme`, `logo` |
+| `no Theme of this name` / `no logo of this name` | `theme` / `logo` |
+| `must be a hex colour of the form #rrggbb` | `accent_color` |
+| `invalid UTF-8` | a query parameter whose value isn't UTF-8 after percent-decoding (`field` names the parameter); `null` when the parameter's name isn't UTF-8 |
+
+Some real examples:
+
+```sh
+curl -s -X POST http://localhost:8080/admin/ballots \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"title": "T", "options": [{"label": "A"}, {"label": "B"}], "voting_deadline": "2026-12-01T12:00:00"}'
+# {"error":"invalid_input","field":"voting_deadline","message":"not an RFC 3339 timestamp with offset"}
+
+curl -s -X POST http://localhost:8080/admin/ballots \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"title": "T", "options": [{"label": "A"}, {"label": "B"}], "voting_deadline": "2026-12-01T12:00:00Z", "fallback": ["A", "B"]}'
+# {"error":"invalid_input","field":"fallback","message":"single choice: select exactly one Option"}
+
+curl -s -X POST http://localhost:8080/admin/ballots \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"title": "T", "options": [{"label": "A"}, {"label": "B"}], "voting_deadline": "2026-12-01T12:00:00Z", "theme": "Dark"}'
+# {"error":"invalid_input","field":"theme","message":"must be a name of lowercase letters, digits and '-' (at most 64)"}
+
+curl -s 'http://localhost:8080/admin/ballots?status=closed' -H "Authorization: Bearer $TOKEN"
+# {"error":"invalid_input","field":"status","message":"must be one of \"unanswered\", \"answered\", \"auto_fallback\""}
+```

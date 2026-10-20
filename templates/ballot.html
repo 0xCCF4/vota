@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<h1>{{ title }}</h1>
+{% if description %}
+<div class="description">{{ description }}</div>
+{% endif %}
+{% if message %}
+<p class="message" role="alert">{{ message }}</p>
+{% endif %}
+<p class="status">Status: {{ status }}</p>
+{% if closed %}
+<p class="deadline">Voting closed <time datetime="{{ deadline_utc }}">{{ deadline_local }}</time>.</p>
+{% else %}
+<p class="deadline">Voting closes <time datetime="{{ deadline_utc }}">{{ deadline_local }}</time>.</p>
+{% endif %}
+{% if closed and answered %}
+<p class="closed">Voting closed. You chose:</p>
+<ul class="selection">
+  {% for option in selected %}
+  <li>{{ option.label }}</li>
+  {% endfor %}
+</ul>
+{% elif closed and fallback %}
+<p class="closed">Voting closed. No answer was given. Fallback applied:</p>
+<ul class="selection">
+  {% for option in fallback %}
+  <li>{{ option.label }}</li>
+  {% endfor %}
+</ul>
+{% elif closed %}
+<p class="closed">Voting closed. No answer was given.</p>
+{% elif read_only %}
+<p class="recorded">Your answer has been recorded.</p>
+<p>You chose:</p>
+<ul class="selection">
+  {% for option in selected %}
+  <li>{{ option.label }}</li>
+  {% endfor %}
+</ul>
+{% else %}
+{% if upcoming_fallback %}
+<p class="fallback">If you don't answer by the deadline, this will be recorded:</p>
+<ul class="fallback-options">
+  {% for option in upcoming_fallback %}
+  <li>{{ option.label }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% if answered %}
+<p class="recorded">Your answer has been saved. You can change it until voting closes.</p>
+{% elif editable %}
+<p class="submission-mode">You can change your answer until voting closes.</p>
+{% else %}
+<p class="submission-mode">Once you submit your answer, you cannot change it.</p>
+{% endif %}
+<form method="post" action="">
+  <fieldset>
+    {% if multiple %}
+    <legend>Choose one or more options</legend>
+    {% else %}
+    <legend>Choose one option</legend>
+    {% endif %}
+    {% for option in options %}
+    <div class="option">
+      {% if multiple %}
+      <input type="checkbox" name="option" value="{{ option.id }}" id="option-{{ option.id }}"{% if option.checked %} checked{% endif %}>
+      {% else %}
+      <input type="radio" name="option" value="{{ option.id }}" id="option-{{ option.id }}" required{% if option.checked %} checked{% endif %}>
+      {% endif %}
+      <label for="option-{{ option.id }}">{{ option.label }}</label>
+    </div>
+    {% endfor %}
+  </fieldset>
+  {% if not editable %}
+  <button type="submit">Continue</button>
+  {% elif answered %}
+  <button type="submit">Change answer</button>
+  {% else %}
+  <button type="submit">Save answer</button>
+  {% endif %}
+</form>
+{% endif %}
+{% endblock %}

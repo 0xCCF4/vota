@@ -1,0 +1,132 @@
+/* Vota built-in Theme "minimal": plain typography on white, hairline
+ * rules, nothing else. No external fonts or images.
+ *
+ * Custom properties a Ballot's Theme Tweaks set (see base.html):
+ *   --accent           the accent colour (buttons, highlights)
+ *   --accent-contrast  black or white, whichever reads better on --accent
+ * Text and links never use --accent, so contrast holds for any accent. */
+
+:root {
+  color-scheme: light;
+  --accent: #111111;
+  --accent-contrast: #ffffff;
+  --bg: #ffffff;
+  --text: #111111;
+  --muted: #555555;
+  --border: #d4d4d4;
+  --link: #111111;
+  --focus: #0050c8;
+  --danger: #b00020;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+  font-size: 1.125rem;
+  line-height: 1.6;
+}
+
+.masthead, main {
+  max-width: 38rem;
+  margin: 0 auto;
+  padding: 0 1rem;
+}
+.masthead { padding-top: 2rem; }
+main { padding-top: 2rem; padding-bottom: 3rem; }
+
+.logo {
+  display: block;
+  max-height: 2.5rem;
+  max-width: 10rem;
+  width: auto;
+  height: auto;
+}
+
+h1 {
+  margin: 0 0 1rem;
+  font-size: 2rem;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+}
+h2 { margin: 2rem 0 0.5rem; font-size: 1.25rem; font-weight: 600; }
+
+a { color: var(--link); text-decoration-thickness: 1px; text-underline-offset: 0.2em; }
+a:hover { text-decoration-thickness: 2px; }
+
+.description { margin: 0 0 1.5rem; }
+.description > :first-child { margin-top: 0; }
+
+.status, .deadline, .submission-mode {
+  margin: 0.25rem 0;
+  color: var(--muted);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 0.9375rem;
+}
+
+.message, .warning {
+  margin: 1.25rem 0;
+  padding: 0.25rem 0 0.25rem 0.875rem;
+  border-left: 3px solid var(--danger);
+}
+
+.recorded, .closed, .fallback {
+  margin: 1.25rem 0 0.5rem;
+  padding: 0.25rem 0 0.25rem 0.875rem;
+  border-left: 3px solid var(--accent);
+}
+
+.selection, .fallback-options { margin: 0.5rem 0 1rem; padding-left: 1.5rem; }
+.selection li, .fallback-options li { margin: 0.2rem 0; }
+
+fieldset {
+  margin: 1.5rem 0;
+  padding: 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+  min-width: 0;
+}
+legend {
+  padding: 0 0.5rem 0 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 0.9375rem;
+  color: var(--muted);
+}
+
+.option {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.option input { flex: none; width: 1.125rem; height: 1.125rem; margin: 0; accent-color: var(--accent); }
+.option label { flex: 1; cursor: pointer; overflow-wrap: anywhere; }
+
+button {
+  min-height: 2.75rem;
+  padding: 0.5rem 1.5rem;
+  border: 1px solid var(--accent);
+  border-radius: 0;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 1rem;
+  cursor: pointer;
+}
+button:hover { filter: brightness(0.9); }
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+}
+
+@media (forced-colors: active) {
+  button { border: 1px solid ButtonText; }
+}

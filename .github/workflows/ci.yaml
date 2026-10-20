@@ -1,0 +1,165 @@
+name: ci
+
+on:
+  pull_request:
+    branches:
+      - 'main'
+  push:
+    branches-ignore:
+      - 'gh-readonly-queue/**'
+  workflow_dispatch:
+  merge_group:
+    types: [ checks_requested ]
+
+env:
+  RUSTFLAGS: -Dwarnings
+
+# Vota: least privilege. frostx has no `permissions` block here, so its jobs get
+# the repository's default token scope; none of these jobs writes anything.
+permissions:
+  contents: read
+
+# Vota: frostx installs Rust with actions-rs/toolchain@v1 and runs cargo with
+# actions-rs/cargo@v1. Both are archived and run on a Node version GitHub no
+# longer supports; actionlint rejects them ("the runner of ... is too old to
+# run on GitHub Actions"). They are replaced by
+# actions-rust-lang/setup-rust-toolchain (which frostx already uses in
+# release-archive.yml, same version) and plain `run: cargo …` steps with the
+# same arguments. The action also caches ~/.cargo and target/.
+
+jobs:
+  build_and_test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name
+    strategy:
+      matrix:
+        os: [ ubuntu-latest ]
+        rustalias: [ stable, nightly ]
+        # Vota: frostx tests only the default features. Every combination of
+        # the `server` and `client` features must build and pass its tests:
+        # both (the default), server only, client only, neither.
+        feature_flag:
+          - ""
+          - "--no-default-features --features server"
+          - "--no-default-features --features client"
+          - "--no-default-features"
+        include:
+          - rustalias: stable
+            rust: stable
+          - rustalias: nightly
+            rust: nightly
+
+    name: 'Build and test ${{ matrix.feature_flag }}: ${{ matrix.os }}, ${{ matrix.rustalias }}'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - name: Check
+        run: cargo check --all ${{ matrix.feature_flag }} --bins --examples
+
+      - name: Tests
+        run: cargo test --all ${{ matrix.feature_flag }}
+
+  nix_build:
+    name: 'Build nix version for <nixpkgs/${{ matrix.nixpkgs }}>'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Vota: only branches whose Rust can build the crate. sqlx 0.9 needs
+        # rustc 1.94, so frostx's release-25.05 (rustc 1.86) and release-25.11
+        # (rustc 1.91) are dropped; release-26.05 (rustc 1.95) is added.
+        nixpkgs:
+          - release-26.05
+          - nixos-unstable
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      # Vota: 30m instead of frostx's 5m. The package runs the whole test suite
+      # in its checkPhase; a cold build took 12-13 minutes on 4 cores locally.
+      - run: timeout 30m nix build -L --no-update-lock-file --no-write-lock-file --override-input nixpkgs github:nixos/nixpkgs/${{ matrix.nixpkgs }}
+
+  # Vota: not in frostx. The NixOS module's end-to-end VM test
+  # (nix/vm-test.nix), against the flake's locked nixpkgs. ubuntu-latest
+  # exposes /dev/kvm, and install-nix-action makes it usable (its `enable_kvm`
+  # input defaults to true), so QEMU runs hardware-accelerated.
+  nixos_vm:
+    name: 'NixOS VM test'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      - run: nix build .#checks.x86_64-linux.nixos-vm -L
+
+  # Vota: not in frostx. The voting page script's browser check
+  # (tests/browser/ballot_js.mjs) in headless Chromium, at the root and under
+  # the sub-path /polls/, run as ONBOARDING.md runs it. Node and Chromium come
+  # from nixpkgs, as locally; the script starts Chromium with --no-sandbox, so
+  # Ubuntu's AppArmor restriction on user namespaces does not get in the way.
+  browser_check:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name
+    name: 'Browser check'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
+        with:
+          toolchain: stable
+      - name: Build
+        run: cargo build --bin vota
+      - name: Browser check at the root
+        run: nix shell nixpkgs#nodejs nixpkgs#chromium -c node tests/browser/ballot_js.mjs
+      - name: Browser check under /polls/
+        run: nix shell nixpkgs#nodejs nixpkgs#chromium -c node tests/browser/ballot_js.mjs
+        env:
+          BASE_PATH: /polls/
+
+  cargo_fmt:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name
+    runs-on: ubuntu-latest
+    name: 'Cargo fmt'
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
+        with:
+          toolchain: nightly
+          components: rustfmt
+      - name: fmt
+        run: cargo fmt --all -- --check
+
+  style_and_docs:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name
+    strategy:
+      matrix:
+        # Vota: clippy and docs also with all features and with each
+        # combination of the `server` and `client` features (as in
+        # build_and_test). The repo's rule is that every variant is clean.
+        feature_flag:
+          - ""
+          - "--all-features"
+          - "--no-default-features --features server"
+          - "--no-default-features --features client"
+          - "--no-default-features"
+    runs-on: ubuntu-latest
+    name: 'Style and docs ${{ matrix.feature_flag }}'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
+        with:
+          toolchain: nightly
+          components: clippy
+          # Vota: the action's default `build-warnings: deny` also turns
+          # rustdoc warnings into errors (actions-rs in frostx did not), so
+          # `cargo doc` fails on a new rustdoc warning.
+      - name: clippy
+        run: cargo clippy --all-targets ${{ matrix.feature_flag }} -- -D warnings
+      - name: docs
+        run: cargo doc --no-deps ${{ matrix.feature_flag }}

@@ -1,0 +1,113 @@
+[package]
+name = "vota"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/0xCCF4/vota"
+description = "Self-hosted personal ballots: one voter per unguessable URL, with an admin API and a themed voting page"
+readme = "README.md"
+keywords = ["ballot", "voting", "self-hosted", "web-app", "axum"]
+categories = ["web-programming::http-server", "command-line-utilities"]
+# Internal files stay out of the published crate. README links into docs/ stay
+# relative: crates.io resolves them against `repository`.
+exclude = [
+    ".scratch/",
+    "docs/",
+    "nix/",
+    "flake.nix",
+    "flake.lock",
+    "tests/browser/",
+    ".github/",
+    ".claude/",
+]
+
+[dependencies]
+ammonia = { version = "4.2.4", optional = true }
+anyhow = "1.0.104"
+axum = { version = "0.8.9", optional = true }
+base64 = { version = "0.23.1", optional = true }
+chrono = { version = "0.4.45", features = ["serde"], optional = true }
+chrono-tz = { version = "0.10.4", features = ["serde"], optional = true }
+clap = { version = "4.6.7", features = ["derive", "env"] }
+clap_complete = "4.6.11"
+figment = { version = "0.10.19", features = ["toml", "env"], optional = true }
+getrandom = { version = "0.4.3", optional = true }
+humantime = { version = "2.4.0", optional = true }
+humantime-serde = { version = "1.1.1", optional = true }
+hyper = { version = "1.12.0", features = ["http1", "server"], optional = true }
+hyper-util = { version = "0.1.21", features = ["tokio"], optional = true }
+icu_properties = { version = "2.3.0", optional = true }
+ipnet = { version = "2.12.2", features = ["serde"], optional = true }
+minijinja = { version = "3.0.1", features = ["serde"], optional = true }
+percent-encoding = { version = "2.3.2", optional = true }
+pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"], optional = true }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls"], optional = true }
+serde = { version = "1.0.229", features = ["derive"], optional = true }
+serde_json = { version = "1.0.154", optional = true }
+serde_path_to_error = { version = "0.1.20", optional = true }
+sha2 = { version = "0.11.1", optional = true }
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "chrono"], optional = true }
+tokio = { version = "1.53.3", features = ["full"] }
+tower = { version = "0.5.3", features = ["util"], optional = true }
+tracing = { version = "0.1.44", optional = true }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"], optional = true }
+unicode-normalization = { version = "0.1.25", optional = true }
+untrusted_value = { version = "0.3.2", optional = true }
+url = { version = "2.5.8", features = ["serde"], optional = true }
+
+[features]
+default = ["server", "client"]
+# `vota serve` and `vota admin-token …`: the web server, the database, and
+# their dependencies. `--no-default-features --features client` builds a
+# client-only binary.
+server = [
+    "dep:ammonia",
+    "dep:axum",
+    "dep:base64",
+    "dep:chrono",
+    "dep:chrono-tz",
+    "dep:figment",
+    "dep:getrandom",
+    "dep:humantime",
+    "dep:humantime-serde",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:icu_properties",
+    "dep:ipnet",
+    "dep:minijinja",
+    "dep:percent-encoding",
+    "dep:pulldown-cmark",
+    "dep:rustix",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:serde_path_to_error",
+    "dep:sha2",
+    "dep:sqlx",
+    "dep:tower",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+    "dep:unicode-normalization",
+    "dep:untrusted_value",
+    "dep:url",
+]
+# `vota ballot …`, the admin API client, and its HTTP(S) dependencies.
+# `--no-default-features --features server` builds a server-only binary.
+client = [
+    "dep:humantime",
+    "dep:icu_properties",
+    "dep:percent-encoding",
+    "dep:reqwest",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:url",
+]
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.5", features = ["fs", "process"], optional = true }
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+libc = "0.2.190"
+http-body-util = "0.1.5"
+tempfile = "3.27.0"
+tower = { version = "0.5.3", features = ["util"] }

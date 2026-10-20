@@ -1,0 +1,60 @@
+name: Install crates
+
+on:
+  schedule:
+    # Vota: `0 13 * * 1`, once on Mondays at 13:00 UTC. frostx's `* 13 * * 1`
+    # starts a run every minute from 13:00 to 13:59.
+    - cron: "0 13 * * 1"
+
+env:
+  RUSTFLAGS: -Dwarnings
+
+# Vota: least privilege. frostx has no `permissions` block here; nothing in
+# this workflow writes to the repository.
+permissions:
+  contents: read
+
+# Vota: actions-rs/toolchain and actions-rs/cargo replaced by
+# actions-rust-lang/setup-rust-toolchain and a plain `cargo install` step, as in
+# ci.yaml (archived, too old to run; actionlint rejects them).
+
+jobs:
+  crates_build:
+    strategy:
+      matrix:
+        os: [ ubuntu-latest ]
+        rustalias: [ stable, nightly ]
+        feature_flag: [ "" ]
+        include:
+          - rustalias: stable
+            rust: stable
+          - rustalias: nightly
+            rust: nightly
+
+    name: 'Build and test ${{ matrix.feature_flag }}: ${{ matrix.os }}, ${{ matrix.rustalias }}'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - name: Install
+        run: cargo install vota --bin vota ${{ matrix.feature_flag }}
+
+  nix_build:
+    name: 'Build nix version for <nixpkgs/${{ matrix.nixpkgs }}>'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Vota: the same branches as in ci.yaml (see there for the dropped ones).
+        nixpkgs:
+          - release-26.05
+          - nixos-unstable
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      # Vota: 30m instead of 5m, as in ci.yaml (the build runs the test suite).
+      - run: timeout 30m nix build github:0xCCF4/vota -L --no-update-lock-file --no-write-lock-file --override-input nixpkgs github:nixos/nixpkgs/${{ matrix.nixpkgs }}

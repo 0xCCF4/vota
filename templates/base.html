@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<title>{% block title %}{% endblock %}</title>
+<link rel="stylesheet" href="{{ theme_stylesheet }}">
+{% if accent_color %}
+<style nonce="{{ csp_nonce }}">:root { --accent: {{ accent_color }}; --accent-contrast: {{ accent_contrast }}; }</style>
+{% endif %}
+</head>
+<body>
+{% if logo_url %}
+<header class="masthead"><img class="logo" src="{{ logo_url }}" alt=""></header>
+{% endif %}
+<main>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

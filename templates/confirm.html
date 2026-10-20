@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Confirm your answer: {{ title }}{% endblock %}
+{% block content %}
+<h1>{{ title }}</h1>
+{% if description %}
+<div class="description">{{ description }}</div>
+{% endif %}
+<h2>Confirm your answer</h2>
+<p>You chose:</p>
+<ul class="selection">
+  {% for option in selected %}
+  <li>{{ option.label }}</li>
+  {% endfor %}
+</ul>
+<p class="warning"><strong>You cannot change your answer after you confirm it.</strong></p>
+<form method="post" action="">
+  {% for option in selected %}
+  <input type="hidden" name="option" value="{{ option.id }}">
+  {% endfor %}
+  <button type="submit" name="confirm" value="yes">Confirm and submit</button>
+</form>
+<p><a href="">Go back and choose again</a></p>
+{% endblock %}

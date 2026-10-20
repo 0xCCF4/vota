@@ -1,0 +1,51 @@
+name: Auto publish artifacts
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  release:
+    name: release ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Vota: Linux only. Vota uses Unix-only APIs (umask, file modes,
+        # rustix, SIGTERM), so frostx's x86_64-pc-windows-gnu is dropped.
+        # aarch64-unknown-linux-musl is not added: rust-build.action runs in an
+        # x86_64 Alpine image without an aarch64 cross toolchain and lists only
+        # x86_64-pc-windows-gnu, x86_64-unknown-linux-musl, wasm32-wasi and
+        # x86_64-apple-darwin as supported targets.
+        include:
+          - target: x86_64-unknown-linux-musl
+            archive: tar.gz
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
+        with:
+          toolchain: "stable"
+          target: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --bin vota --verbose
+
+      - name: Run tests
+        run: cargo test --verbose
+
+      # Templates, themes, static assets and migrations are compiled into the
+      # binary (include_str! / sqlx::migrate!), so the archive needs only it.
+      - name: Compile and release
+        uses: rust-build/rust-build.action@v1.4.5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          RUSTTARGET: ${{ matrix.target }}
+          ARCHIVE_TYPES: ${{ matrix.archive }}
+          TOOLCHAIN_VERSION: stable
+          EXTRA_COMMAND_FLAGS: --bin vota
+
+    permissions:
+      contents: write
+

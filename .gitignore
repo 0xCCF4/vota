@@ -1,0 +1,9 @@
+target/
+result
+result-*
+*.db
+*.db-*
+.direnv/
+.idea/
+.claude/worktrees/
+.scratch/
