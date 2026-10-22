@@ -10,7 +10,7 @@ It is one Rust binary with one SQLite database, meant to run behind a reverse pr
 ## Features
 
 - **Personal Ballots**: one voter per URL. The URL carries a 128-bit **Ballot Token**, the voter's only credential.
-- **Single or multiple choice**, **Final** (locked after submitting, with a confirmation step) or **Editable** (changeable until the deadline) Responses.
+- **Single or multiple choice** (multiple choice may allow answering with no Option at all), **Final** (locked after submitting, with a confirmation step) or **Editable** (changeable until the deadline) Responses.
 - **Voting Deadline** with an optional **Fallback** that becomes the result if the voter doesn't answer. Deadlines can be extended, which reopens closed Ballots.
 - **Purge Date**: every Ballot is deleted automatically (by default four weeks after its deadline), or earlier on request.
 - **Admin bookkeeping**: a **Group** to fetch a survey's results together and a hidden **Voter Reference** (unique within the Group) to know whose Ballot is whose. Neither is ever shown to the voter.

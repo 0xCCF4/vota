@@ -629,8 +629,37 @@ fn other_values_go_to_the_server_as_given() {
     assert_eq!(output.status.code(), Some(5), "{output:?}");
     assert_eq!(
         texts(&output).1,
-        "Error: 422 invalid_input: not an RFC 3339 timestamp with offset (field: voting_deadline)\n"
+        "Error: 422 invalid_input: not an RFC 3339 timestamp, or a local date-time in the \
+         server's default time zone (YYYY-MM-DDTHH:MM[:SS]) (field: voting_deadline)\n"
     );
+}
+
+#[test]
+fn a_deadline_without_offset_is_read_by_the_server_in_its_default_time_zone() {
+    let admin = Admin::start_with(|command, _| {
+        command.env("VOTA_DEFAULT_TIME_ZONE", "Asia/Kolkata");
+    });
+    // India has no daylight saving time: always +05:30.
+    let local = (chrono::Utc::now() + chrono::Duration::days(7))
+        .with_timezone(&chrono_tz::Asia::Kolkata)
+        .format("%Y-%m-%dT%H:%M")
+        .to_string();
+
+    let created = admin.create(&["--voting-deadline", &local]);
+
+    let deadline: chrono::DateTime<chrono::Utc> = created["voting_deadline"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        deadline
+            .with_timezone(&chrono_tz::Asia::Kolkata)
+            .format("%Y-%m-%dT%H:%M")
+            .to_string(),
+        local
+    );
+    assert!(created["voting_deadline"].as_str().unwrap().ends_with('Z'));
 }
 
 #[test]
@@ -762,4 +791,70 @@ fn readable_output_escapes_control_characters_from_the_server() {
         let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
         assert_eq!(parsed, answer);
     }
+}
+
+#[test]
+fn allow_no_option_is_set_shown_and_its_empty_answer_told_apart_from_none() {
+    let admin = Admin::start();
+    let created = admin.create(&["--choice-mode", "multiple", "--allow-no-option"]);
+    assert_eq!(created["allow_no_option"], true, "{created}");
+    let unanswered = admin.create(&["--choice-mode", "multiple"]);
+    assert_eq!(unanswered["allow_no_option"], false, "{unanswered}");
+    vote(&admin, created["token"].as_str().unwrap(), &[]);
+
+    let output = admin.ballot().args(["get", "1"]).output().unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    let (stdout, _) = texts(&output);
+    assert!(stdout.contains("Allow No Option: yes\n"), "{stdout}");
+    assert!(
+        stdout.contains("Response:        (none) (answered "),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("Result:          (none) (from the Response)\n"),
+        "{stdout}"
+    );
+    let (stdout, _) = texts(&admin.ballot().args(["get", "2"]).output().unwrap());
+    assert!(stdout.contains("Allow No Option: no\n"), "{stdout}");
+    assert!(stdout.contains("Response:        -\n"), "{stdout}");
+
+    let output = admin.ballot().arg("list").output().unwrap();
+    let (stdout, _) = texts(&output);
+    let rows: Vec<&str> = stdout.lines().collect();
+    assert!(rows[1].ends_with("  (none)"), "{stdout}");
+    assert!(rows[2].ends_with("  -"), "{stdout}");
+}
+
+#[test]
+fn edit_turns_allow_no_option_on_and_off() {
+    let admin = Admin::start();
+    admin.create(&["--choice-mode", "multiple"]);
+    let edit = |flag: &str| {
+        let output = admin
+            .ballot()
+            .args(["edit", "1", flag, "--json"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["allow_no_option"]
+            .clone()
+    };
+
+    assert_eq!(edit("--allow-no-option"), true);
+    assert_eq!(edit("--allow-no-option=false"), false);
+    assert_eq!(edit("--allow-no-option=true"), true);
+}
+
+#[test]
+fn allow_no_option_takes_only_true_or_false() {
+    let admin = Admin::start();
+
+    let output = admin
+        .ballot()
+        .args(["edit", "1", "--allow-no-option=yes"])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
 }

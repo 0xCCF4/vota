@@ -16,7 +16,7 @@ async fn an_unanswered_ballot_shows_its_status() {
     let html = body_string(app.get(&format!("/b/{token}")).await).await;
 
     assert!(
-        html.contains(r#"<p class="status">Status: Unanswered</p>"#),
+        html.contains(r#"<p class="status" data-state="open" title="Ballot Status: Unanswered"><span class="visually-hidden">Status: </span>Open</p>"#),
         "{html}"
     );
 }
@@ -67,7 +67,7 @@ async fn confirming_records_the_response_and_redirects_to_a_read_only_view() {
     assert_eq!(response.headers()[header::LOCATION], page.as_str());
     let html = body_string(app.get(&page).await).await;
     assert!(
-        html.contains(r#"<p class="status">Status: Answered</p>"#),
+        html.contains(r#"<p class="status" data-state="answered" title="Ballot Status: Answered"><span class="visually-hidden">Status: </span>Answered</p>"#),
         "{html}"
     );
     assert!(html.contains("Your answer has been recorded."), "{html}");
@@ -234,7 +234,7 @@ async fn a_response_submitted_through_the_api_shows_read_only_on_the_page() {
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_string(response).await;
     assert!(
-        html.contains(r#"<p class="status">Status: Answered</p>"#),
+        html.contains(r#"<p class="status" data-state="answered" title="Ballot Status: Answered"><span class="visually-hidden">Status: </span>Answered</p>"#),
         "{html}"
     );
     assert!(html.contains("<li>Pizza</li>"), "{html}");

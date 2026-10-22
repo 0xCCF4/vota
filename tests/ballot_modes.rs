@@ -40,12 +40,12 @@ async fn the_voting_page_tells_the_voter_whether_they_can_change_their_answer() 
     for (mode, notice, button) in [
         (
             "final",
-            "Once you submit your answer, you cannot change it.",
+            r#"<p class="submission-mode final">Once you submit your answer, you cannot change it.</p>"#,
             "Continue",
         ),
         (
             "editable",
-            "You can change your answer until voting closes.",
+            r#"<p class="submission-mode">You can change your answer until then.</p>"#,
             "Save answer",
         ),
     ] {
@@ -53,8 +53,7 @@ async fn the_voting_page_tells_the_voter_whether_they_can_change_their_answer() 
 
         let html = body_string(app.get(&format!("/b/{token}")).await).await;
 
-        let notice = format!(r#"<p class="submission-mode">{notice}</p>"#);
-        assert!(html.contains(&notice), "{mode}: {html}");
+        assert!(html.contains(notice), "{mode}: {html}");
         let button = format!(r#"<button type="submit">{button}</button>"#);
         assert!(html.contains(&button), "{mode}: {html}");
     }

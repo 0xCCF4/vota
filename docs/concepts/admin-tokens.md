@@ -8,7 +8,7 @@ An **Admin Token** is the only credential for the admin API. Whoever holds a val
 
 - **No network isolation.** Admin Tokens alone guard every Voter Reference and Response, so they are long and random, shown once, and never logged.
 - **The admin router is guarded as a whole.** All admin routes, including unknown paths under `/admin`, sit in their own router behind the token middleware (`src/api/admin.rs`). Without a valid token, even a `404` is unreachable: every request gets `401` (or `429` once the client has spent its budget of failed Admin Token checks, or `400` for an unreadable `X-Forwarded-For` from a trusted proxy).
-- **No HTTP endpoint creates tokens.** Whoever can run the CLI against the database is the root of trust.
+- **No HTTP endpoint creates tokens.** Whoever can run the CLI against the database, or set the server's configuration and its [Admin Token files](#admin-tokens-from-files), is the root of trust.
 - Moving the admin API to a separate port later would be possible, but it would change every admin client's URL.
 
 ## Lifecycle
@@ -23,12 +23,26 @@ An **Admin Token** is the only credential for the admin API. Whoever holds a val
 
 See the [CLI reference](../reference/cli.md) for flags, output and exit codes.
 
+## Admin Tokens from files
+
+A host that provisions its secrets declaratively (agenix, sops-nix, a configuration-management tool) can give the server Admin Tokens in files instead of creating them in the database: [`admin_token_files`](../reference/configuration.md#admin_token_files) lists them, and on NixOS `services.vota.adminTokenFiles` passes them in as systemd credentials (see [Deployment: NixOS](../guides/deployment.md#admin-tokens-from-files-agenix)).
+
+| Step | How | Notes |
+| ---- | --- | ----- |
+| Create | `vota admin-token generate`, or the [shell one-liner](../reference/cli.md#admin-token-generate), into the secret file | Stored nowhere by Vota. Same format as a created token. |
+| Provision | list the file in `admin_token_files` and (re)start `serve` | Read once at startup; a missing, unreadable or malformed file stops startup, naming the file, never its contents. |
+| Use | `Authorization: Bearer vta_…`, as any Admin Token | Compared by SHA-256 hash with every file's token, without the database (so it works even when the database fails). |
+| List | not listed by `admin-token list` | The [audit log](../reference/admin-api.md#audit-log) names it `token_id=file:<n>`, the n-th file from 1. |
+| Revoke | remove the file from the list and restart | `admin-token revoke` can't reach it. Changing the file's token likewise takes a restart. |
+
+File tokens have no label, no expiry and no recorded last use. Only their SHA-256 hashes are kept in memory; the server never writes them anywhere.
+
 ## Format and storage
 
 - **Secret**: `vta_` followed by 256 bits from the operating system's CSPRNG, base64url without padding (43 characters, 47 in total). The `vta_` prefix makes leaked tokens easy to spot by secret scanners.
-- **Storage**: only the SHA-256 hash of the secret, with ID, optional label, creation time, optional expiry and the time of its last use, recorded at most once a minute (`admin_tokens` table, `migrations/0001_admin_tokens.sql`, `0010_admin_token_last_used.sql`). A copy of the database does not reveal a usable token.
-- **Checking**: the middleware hashes the presented token and looks the hash up, ignoring rows whose `expires_at` is not after now.
-- **Logging**: tokens appear only on the CLI's stdout at creation. They are never logged. The secret type's `Debug` output is redacted. Every admin request is logged in the [audit log](../reference/admin-api.md#audit-log) with the token's **ID**, the method, the route template, the status and the client IP.
+- **Storage**: for a created token, only the SHA-256 hash of the secret, with ID, optional label, creation time, optional expiry and the time of its last use, recorded at most once a minute (`admin_tokens` table, `migrations/0001_admin_tokens.sql`, `0010_admin_token_last_used.sql`). A copy of the database does not reveal a usable token.
+- **Checking**: the middleware hashes the presented token and compares the hash with the file tokens' hashes (each one, in constant time), then looks it up in the database, ignoring rows whose `expires_at` is not after now. Comparing or looking up hashes reveals nothing useful about a token through timing: a hash prefix doesn't help to find a token that has it.
+- **Logging**: tokens appear only on the CLI's stdout at creation (`create`, `generate`). They are never logged. The secret type's `Debug` output is redacted. Every admin request is logged in the [audit log](../reference/admin-api.md#audit-log) with the token's **ID** (`file:<n>` for a file token), the method, the route template, the status and the client IP.
 - **Guessing**: failed checks are [rate-limited per client IP](../reference/admin-api.md#rate-limit-on-failed-admin-token-checks); with 256 random bits a token can't be guessed anyway, the limit keeps the hashing load bounded.
 - **Labels** are single-line text without control, bidi or invisible characters (checked by `create`), so `list` can print them safely; older labels are escaped.
 
@@ -48,6 +62,7 @@ content-length: 0
 - Give each script or person its own token with a `--label`, so you can revoke one without touching the others. `revoke --label` revokes *all* tokens with that exact label.
 - Prefer an expiry (`--expires-in 90days`) for tokens used by automation.
 - Run the CLI as the user that owns the database file, with the same configuration as the server (same `database_path`). The CLI doesn't read the theme and logo folders, so a broken Theme or logo doesn't block token management.
+- After a suspected leak of a file token: replace the secret (or drop it from `admin_token_files`) and restart the server; its uses are in the audit log under `token_id=file:<n>`.
 - After a suspected leak: `vota admin-token revoke <ID>`, then check `admin-token list` (`LAST-USED`) and the audit log (`journalctl -u vota | grep 'token_id=<ID> '`) for what the token was used for.
 
 ## Related

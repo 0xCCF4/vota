@@ -142,11 +142,11 @@ async fn reopening_shows_the_form_pre_filled_with_the_current_response() {
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_string(response).await;
     assert!(
-        html.contains(r#"<p class="status">Status: Answered</p>"#),
+        html.contains(r#"<p class="status" data-state="answered" title="Ballot Status: Answered"><span class="visually-hidden">Status: </span>Answered</p>"#),
         "{html}"
     );
     assert!(
-        html.contains("Your answer has been saved. You can change it until voting closes."),
+        html.contains("Your answer is saved. You can change it until then."),
         "{html}"
     );
     for (id, checked) in [

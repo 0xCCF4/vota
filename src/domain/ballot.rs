@@ -239,7 +239,8 @@ impl serde::Serialize for OptionId {
 }
 
 /// Whether a Ballot is single choice (exactly one Option) or multiple choice
-/// (one or more Options).
+/// (one or more Options; or none, if the Ballot allows no Option, see
+/// [`ChoiceMode::check_allow_no_option`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ChoiceMode {
     #[default]
@@ -252,12 +253,23 @@ impl ChoiceMode {
 
     /// Whether a selection of `count` distinct Options obeys this Choice
     /// Mode: exactly one Option when single choice, one or more when multiple
-    /// choice; never empty. Responses and Fallbacks obey the same rule.
+    /// choice; never empty. A Fallback obeys this rule as it stands; a
+    /// Response too, unless its Ballot allows no Option
+    /// ([`Ballot::check_selection_count`]).
     pub fn check_selection_count(self, count: usize) -> Result<(), &'static str> {
         match (self, count) {
             (_, 0) => Err("select an Option"),
             (Self::Single, 1) | (Self::Multiple, _) => Ok(()),
             (Self::Single, _) => Err("single choice: select exactly one Option"),
+        }
+    }
+
+    /// Whether a Ballot of this Choice Mode may allow no Option (the voter
+    /// answering with no Option at all): only a multiple-choice one.
+    pub fn check_allow_no_option(self, allow_no_option: bool) -> Result<(), &'static str> {
+        match (self, allow_no_option) {
+            (Self::Single, true) => Err("only a multiple-choice Ballot can allow no Option"),
+            (_, false) | (Self::Multiple, true) => Ok(()),
         }
     }
 
@@ -323,6 +335,9 @@ pub struct NewBallot {
     pub description: Option<Description>,
     pub options: OptionLabels,
     pub choice_mode: ChoiceMode,
+    /// Whether the voter may answer with no Option; only with
+    /// [`ChoiceMode::Multiple`].
+    pub allow_no_option: bool,
     pub submission_mode: SubmissionMode,
     pub voting_deadline: VotingDeadline,
     /// `None`: the default, the Voting Deadline plus the configured gap.
@@ -352,6 +367,8 @@ pub struct BallotDraft {
     pub description: Option<Description>,
     pub options: OptionLabels,
     pub choice_mode: ChoiceMode,
+    /// Only with [`ChoiceMode::Multiple`].
+    pub allow_no_option: bool,
     pub submission_mode: SubmissionMode,
     pub voting_deadline: DateTime<Utc>,
     pub purge_date: DateTime<Utc>,
@@ -380,6 +397,7 @@ impl BallotDraft {
             description: new.description,
             options: new.options,
             choice_mode: new.choice_mode,
+            allow_no_option: new.allow_no_option,
             submission_mode: new.submission_mode,
             voting_deadline,
             purge_date,
@@ -403,6 +421,8 @@ pub struct BallotChanges {
     /// IDs); `None`: the current Options stay as they are.
     pub options: Option<OptionLabels>,
     pub choice_mode: ChoiceMode,
+    /// Only with [`ChoiceMode::Multiple`].
+    pub allow_no_option: bool,
     pub submission_mode: SubmissionMode,
     /// As positions in the resulting Options.
     pub fallback: Option<FallbackChoice>,
@@ -440,11 +460,15 @@ pub struct Ballot {
     pub description: Option<String>,
     pub options: Vec<BallotOption>,
     pub choice_mode: ChoiceMode,
+    /// Allow No Option: whether the voter may answer with no Option at all
+    /// ("none of these"). Only ever set on a multiple-choice Ballot.
+    pub allow_no_option: bool,
     pub submission_mode: SubmissionMode,
     pub voting_deadline: DateTime<Utc>,
     pub purge_date: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
-    /// The voter's Response, if they submitted one.
+    /// The voter's Response, if they submitted one (possibly selecting no
+    /// Option, if the Ballot allows no Option).
     pub response: Option<Response>,
     /// IDs of the Fallback's Options in the Ballot's Option order, if the
     /// admin set a Fallback (never empty). Shown to the voter from the start,
@@ -530,11 +554,15 @@ impl Ballot {
         self.submission_mode == SubmissionMode::Final
     }
 
-    /// Whether a selection of `count` distinct Options of this Ballot obeys
-    /// its Choice Mode: exactly one Option on a single-choice Ballot, one or
-    /// more on a multiple-choice Ballot; never empty. (A Fallback obeys the
-    /// same rule.)
+    /// Whether a Response selecting `count` distinct Options of this Ballot
+    /// obeys its rules: exactly one Option on a single-choice Ballot, one or
+    /// more on a multiple-choice Ballot, or none at all if it allows no
+    /// Option. (A Fallback is never empty: it obeys
+    /// [`ChoiceMode::check_selection_count`] alone.)
     pub fn check_selection_count(&self, count: usize) -> Result<(), &'static str> {
+        if count == 0 && self.allow_no_option {
+            return Ok(());
+        }
         self.choice_mode.check_selection_count(count)
     }
 
@@ -669,7 +697,9 @@ impl ResultSource {
 /// The Options a voter submitted on a Ballot, with when.
 #[derive(Debug, Clone)]
 pub struct Response {
-    /// IDs of the selected Options, in the Ballot's Option order.
+    /// IDs of the selected Options, in the Ballot's Option order. Empty only
+    /// if the Ballot allows no Option: still a Response (the Ballot is
+    /// Answered), unlike having none.
     pub option_ids: Vec<OptionId>,
     pub answered_at: DateTime<Utc>,
     pub changed_at: DateTime<Utc>,

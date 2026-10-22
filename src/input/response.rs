@@ -104,7 +104,10 @@ fn form_revision(raw: &str) -> Option<SeenRevision> {
 #[derive(Deserialize, UntrustedVariant)]
 #[serde(deny_unknown_fields)]
 pub struct ResponseForm {
-    /// The chosen Option IDs (radio buttons or hidden fields).
+    /// The chosen Option IDs (radio buttons or hidden fields). Absent when
+    /// nothing is ticked: the empty selection, valid only if the Ballot
+    /// allows no Option (an unknown field instead makes the form
+    /// unreadable, never empty).
     #[serde(default)]
     option: Vec<String>,
     /// `yes` from the confirmation step's submit button.
@@ -129,8 +132,9 @@ pub struct FormResponse {
 /// the problem. Carries no submitted value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormProblem {
-    /// The number of selected Options breaks the Ballot's Choice Mode (none,
-    /// or more than one on a single-choice Ballot).
+    /// The number of selected Options breaks the Ballot's rules (none,
+    /// unless it allows no Option; or more than one on a single-choice
+    /// Ballot).
     WrongCount,
     /// A value is not an Option ID at all (malformed).
     UnknownOption,

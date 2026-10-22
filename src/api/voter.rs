@@ -138,6 +138,8 @@ fn voter_view(state: &AppState, ballot: &Ballot, now: DateTime<Utc>) -> Value {
         "description": ballot.description,
         "options": ballot_json::options(ballot),
         "choice_mode": ballot.choice_mode.as_str(),
+        // Whether a Response may select no Option at all.
+        "allow_no_option": ballot.allow_no_option,
         "submission_mode": ballot.submission_mode.as_str(),
         "voting_deadline": rfc3339(ballot.voting_deadline),
         "voting_open": ballot.is_open(now),

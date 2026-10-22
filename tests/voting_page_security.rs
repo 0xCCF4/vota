@@ -114,7 +114,10 @@ async fn a_closed_ballot_with_the_fallback_applied_has_the_policy_too() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let html = assert_self_contained(response, "auto-fallback").await;
-    assert!(html.contains("Fallback applied"), "{html}");
+    assert!(
+        html.contains("No answer was given, so this was recorded:"),
+        "{html}"
+    );
 }
 
 #[tokio::test]

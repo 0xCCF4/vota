@@ -58,3 +58,28 @@ pub fn is_current_version(raw: UntrustedValue<String>, current: &str) -> bool {
     })
     .unwrap_or(false)
 }
+
+/// Whether an app asset's version path segment (`/assets/app/{version}/…`)
+/// is `current` exactly. Anything else (an old version, any other text) is
+/// not the current version, but no error either.
+pub fn is_current_version_segment(raw: UntrustedValue<String>, current: &str) -> bool {
+    raw.sanitize_with(|raw| Ok::<_, std::convert::Infallible>(raw == current))
+        .unwrap_or(false)
+}
+
+/// The app module a path segment (`/assets/app/{version}/{file}`) names:
+/// one of `modules`' names by exact match (no case folding, no
+/// normalisation), or none.
+pub fn app_module<'a>(
+    raw: UntrustedValue<String>,
+    modules: &[(&'a str, &'a str)],
+) -> Option<&'a str> {
+    raw.sanitize_with(|raw| {
+        modules
+            .iter()
+            .map(|(name, _)| *name)
+            .find(|name| *name == raw)
+            .ok_or(())
+    })
+    .ok()
+}

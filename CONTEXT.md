@@ -37,16 +37,20 @@ The moment from which the whole Ballot, including its Response and Voter Referen
 _Avoid_: Expiry, data expiry, retention date
 
 **Response**:
-The answers a voter has submitted on a Ballot.
-_Avoid_: Vote, submission, answer set, empty response
+The answers a voter has submitted on a Ballot. On a Ballot that has Allow No Option on, a Response may select no Option at all; it is still a Response (the Ballot is Answered). "No Response" always means the voter has not submitted one.
+_Avoid_: Vote, submission, answer set, empty response (it reads like "no Response"; say "a Response of no Option")
 
 **Option**:
 One of the possible answers listed on a Ballot.
 _Avoid_: Answer, choice
 
 **Choice Mode**:
-Whether a Ballot is *single choice* (exactly one Option) or *multiple choice* (one or more Options). A Response and a Fallback are never empty.
+Whether a Ballot is *single choice* (exactly one Option) or *multiple choice* (one or more Options). A Fallback is never empty; a Response neither, unless the Ballot has Allow No Option on.
 _Avoid_: Answer type, question type
+
+**Allow No Option**:
+A setting of a multiple-choice Ballot, off by default: the voter may answer with no Option at all ("none of these"). Such a Response makes the Ballot Answered, so the Fallback does not apply. A single-choice Ballot can't have it on. Like any setting, the admin can change it only while the Ballot is Unanswered.
+_Avoid_: Allow empty response, allow none, optional answer
 
 **Submission Mode**:
 Whether a Ballot's Response is *Final* (submitted once, then locked) or *Editable* (can be changed until the Voting Deadline).
@@ -61,5 +65,5 @@ Where a Ballot stands: **Unanswered** (no Response yet, or the deadline passed w
 _Avoid_: State, closed, expired
 
 **Admin Token**:
-A secret credential that grants access to the admin API. It is created on the server by the operator with the CLI, may carry a label and an expiry, can be revoked, and is stored only as a hash.
+A secret credential that grants access to the admin API. It is created on the server by the operator with the CLI, may carry a label and an expiry, can be revoked, and is stored only as a hash. The operator may instead provision one in a file the server reads at startup (an Admin Token from a file): no label, expiry or ID, revoked by removing the file from the configuration.
 _Avoid_: API key, admin secret, password

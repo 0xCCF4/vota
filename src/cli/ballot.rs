@@ -86,8 +86,9 @@ enum BallotCommand {
     Extend {
         /// The Ballot's ID.
         id: u64,
-        /// The new Voting Deadline, RFC 3339 with offset.
-        #[arg(long, value_name = "RFC3339", required = true)]
+        /// The new Voting Deadline: RFC 3339, or without an offset local
+        /// time in the server's default time zone.
+        #[arg(long, value_name = "DATETIME", required = true)]
         voting_deadline: String,
     },
     /// Delete a Ballot with its Response (DELETE /admin/ballots/{id}). In a

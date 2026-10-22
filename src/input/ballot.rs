@@ -2,7 +2,8 @@
 
 use std::collections::HashSet;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, LocalResult, NaiveDateTime, TimeZone as _, Utc};
+use chrono_tz::Tz;
 use serde::Deserialize;
 use untrusted_value::derive::UntrustedVariant;
 use untrusted_value::{IntoUntrustedVariant as _, SanitizeWith as _, UntrustedValue};
@@ -29,6 +30,10 @@ pub struct CreateBallotRequest {
     /// Absent means the default; `null` is rejected like any non-string.
     #[serde(default, deserialize_with = "present")]
     choice_mode: Option<String>,
+    /// Whether the voter may answer with no Option (multiple choice only);
+    /// absent means `false`, `null` is rejected.
+    #[serde(default, deserialize_with = "present")]
+    allow_no_option: Option<bool>,
     #[serde(default, deserialize_with = "present")]
     submission_mode: Option<String>,
     voting_deadline: String,
@@ -70,21 +75,34 @@ struct OptionRequest {
     label: String,
 }
 
-/// When a Voting Deadline or Purge Date given by the admin may lie: after
-/// `now`, and no later than `now` plus the configured `max_date_horizon`.
+/// How a Voting Deadline or Purge Date given by the admin is read and where
+/// it may lie: a local date-time (no offset) is in `zone`, the configured
+/// `default_time_zone`; the instant must lie after `now`, and no later than
+/// `now` plus the configured `max_date_horizon`.
 #[derive(Debug, Clone, Copy)]
 pub struct DateBounds {
     now: DateTime<Utc>,
     latest: DateTime<Utc>,
+    zone: Tz,
 }
 
 impl DateBounds {
-    pub fn new(now: DateTime<Utc>, max_date_horizon: std::time::Duration) -> Self {
+    pub fn new(now: DateTime<Utc>, max_date_horizon: std::time::Duration, zone: Tz) -> Self {
         let horizon = chrono::Duration::from_std(max_date_horizon).unwrap_or(chrono::Duration::MAX);
         let latest = now
             .checked_add_signed(horizon)
             .unwrap_or(DateTime::<Utc>::MAX_UTC);
-        Self { now, latest }
+        Self { now, latest, zone }
+    }
+
+    /// The instant `raw` names: RFC 3339 with an offset, or a local
+    /// date-time in the default time zone; then [`Self::check`]ed.
+    fn instant(self, raw: &str) -> Result<DateTime<Utc>, Rejection> {
+        let t = match DateTime::parse_from_rfc3339(raw) {
+            Ok(t) => t.with_timezone(&Utc),
+            Err(_) => local_in(raw, self.zone)?,
+        };
+        self.check(t)
     }
 
     /// `t` if it lies in the future and within the horizon.
@@ -115,6 +133,13 @@ pub fn new_ballot(
         .choice_mode
         .sanitize_with(choice_mode)?
         .unwrap_or_default();
+    let allow_no_option = request.allow_no_option.sanitize_with(|raw| {
+        let allow = raw.unwrap_or(false);
+        choice_mode
+            .check_allow_no_option(allow)
+            .map(|()| allow)
+            .map_err(|reason| InputError::new("allow_no_option", reason))
+    })?;
     let submission_mode = request
         .submission_mode
         .sanitize_with(submission_mode)?
@@ -126,6 +151,7 @@ pub fn new_ballot(
         title,
         description,
         choice_mode,
+        allow_no_option,
         submission_mode,
         purge_date: request.purge_date.sanitize_with(|raw| {
             raw.map(|raw| purge_date(raw, voting_deadline.get(), dates))
@@ -207,6 +233,9 @@ pub struct EditBallotRequest {
     options: Option<Vec<OptionRequest>>,
     #[serde(default, deserialize_with = "present")]
     choice_mode: Option<String>,
+    /// `null` is rejected; `false` turns it off.
+    #[serde(default, deserialize_with = "present")]
+    allow_no_option: Option<bool>,
     #[serde(default, deserialize_with = "present")]
     submission_mode: Option<String>,
     /// Labels of the Fallback's Options; `null` removes the Fallback.
@@ -244,6 +273,7 @@ impl EditBallotRequest {
             || self.description.is_some()
             || self.options.is_some()
             || self.choice_mode.is_some()
+            || self.allow_no_option.is_some()
             || self.submission_mode.is_some()
             || self.fallback.is_some()
             || self.voting_deadline.is_some()
@@ -309,6 +339,9 @@ pub fn ballot_changes(
         .choice_mode
         .sanitize_with(choice_mode)?
         .unwrap_or(ballot.choice_mode);
+    let allow_no_option = request
+        .allow_no_option
+        .sanitize_with(|raw| allowed_no_option(raw, ballot.allow_no_option, choice_mode))?;
     let submission_mode = request
         .submission_mode
         .sanitize_with(submission_mode)?
@@ -370,6 +403,7 @@ pub fn ballot_changes(
         description,
         options,
         choice_mode,
+        allow_no_option,
         submission_mode,
         fallback,
         group,
@@ -380,6 +414,29 @@ pub fn ballot_changes(
         accent_color,
         logo,
     })
+}
+
+/// Allow No Option as an edit leaves it (`raw`, or else `current`), checked
+/// against the resulting Choice Mode. A Choice Mode changed to single while
+/// it stays on is the Choice Mode's fault: the admin must turn it off too.
+fn allowed_no_option(
+    raw: Option<bool>,
+    current: bool,
+    choice_mode: ChoiceMode,
+) -> Result<bool, InputError> {
+    let allow = raw.unwrap_or(current);
+    choice_mode.check_allow_no_option(allow).map_err(|reason| {
+        if raw.is_some() {
+            InputError::new("allow_no_option", reason)
+        } else {
+            InputError::new(
+                "choice_mode",
+                "the Ballot allows no Option, which needs multiple choice; \
+                 set allow_no_option to false as well",
+            )
+        }
+    })?;
+    Ok(allow)
 }
 
 /// The Purge Date when an edit moves the Voting Deadline without giving one:
@@ -616,9 +673,7 @@ fn fallback_choice(
 /// A Voting Deadline: in the future and within the horizon.
 fn voting_deadline(raw: String, dates: DateBounds) -> Result<VotingDeadline, InputError> {
     let error = |reason| InputError::new("voting_deadline", reason);
-    let deadline = rfc3339_utc(&raw)
-        .and_then(|t| dates.check(t))
-        .map_err(error)?;
+    let deadline = dates.instant(&raw).map_err(error)?;
     Ok(VotingDeadline::new(deadline, Sanitized::PROOF))
 }
 
@@ -630,18 +685,48 @@ fn purge_date(
     dates: DateBounds,
 ) -> Result<DateTime<Utc>, InputError> {
     let error = |reason| InputError::new("purge_date", reason);
-    let purge_date = rfc3339_utc(&raw)
-        .and_then(|t| dates.check(t))
-        .map_err(error)?;
+    let purge_date = dates.instant(&raw).map_err(error)?;
     if purge_date < voting_deadline {
         return Err(error("must not be before the Voting Deadline"));
     }
     Ok(purge_date)
 }
 
-/// RFC 3339 with an explicit offset (`Z` or `±hh:mm`), converted to UTC.
-fn rfc3339_utc(raw: &str) -> Result<DateTime<Utc>, Rejection> {
-    DateTime::parse_from_rfc3339(raw)
-        .map(|t| t.with_timezone(&Utc))
-        .map_err(|_| "not an RFC 3339 timestamp with offset")
+/// The instant a local date-time without offset names in `zone`:
+/// exactly `YYYY-MM-DDTHH:MM`, optionally with `:SS` and then optionally a
+/// fraction (`.` and 1–9 digits), as RFC 3339 writes them. A time a clock
+/// change skips or repeats in `zone` is refused, asking for an offset.
+fn local_in(raw: &str, zone: Tz) -> Result<DateTime<Utc>, Rejection> {
+    const MALFORMED: Rejection = "not an RFC 3339 timestamp, or a local date-time in the \
+                                  server's default time zone (YYYY-MM-DDTHH:MM[:SS])";
+    // The exact shape first: chrono's own parsing would also take e.g. a
+    // one-digit month or a sign before the year.
+    let shape = raw.bytes().enumerate().all(|(i, b)| match i {
+        4 | 7 => b == b'-',
+        10 => b == b'T',
+        13 | 16 => b == b':',
+        19 => b == b'.',
+        _ => b.is_ascii_digit(),
+    });
+    let format = match raw.len() {
+        16 => "%Y-%m-%dT%H:%M",
+        19 => "%Y-%m-%dT%H:%M:%S",
+        21..=29 => "%Y-%m-%dT%H:%M:%S%.f",
+        _ => return Err(MALFORMED),
+    };
+    if !shape {
+        return Err(MALFORMED);
+    }
+    let local = NaiveDateTime::parse_from_str(raw, format).map_err(|_| MALFORMED)?;
+    match zone.from_local_datetime(&local) {
+        LocalResult::Single(t) => Ok(t.with_timezone(&Utc)),
+        LocalResult::None => Err(
+            "does not exist in the server's default time zone (skipped by a clock change); \
+             give a UTC offset",
+        ),
+        LocalResult::Ambiguous(..) => Err(
+            "is ambiguous in the server's default time zone (repeated by a clock change); \
+             give a UTC offset",
+        ),
+    }
 }

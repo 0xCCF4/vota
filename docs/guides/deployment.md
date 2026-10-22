@@ -515,6 +515,7 @@ The configuration holds no secret, so it may live in the world-readable store; A
 | ------ | ---- | ------- | ------- |
 | `services.vota.enable` | boolean | `false` | Run the service and install `vota-admin-token` and `vota` (the package, with its completions). |
 | `services.vota.package` | package | this flake's `vota` | The Vota package. |
+| `services.vota.adminTokenFiles` | list of strings (absolute paths outside the store) | `[ ]` | Files with one pre-provisioned Admin Token each, e.g. agenix secrets; passed in as systemd credentials. See [Admin Tokens from files (agenix)](#admin-tokens-from-files-agenix) and [`admin_token_files`](../reference/configuration.md#admin_token_files). |
 | `services.vota.openFirewall` | boolean | `false` | Open `settings.port` in the firewall. Only needed when a proxy on another machine connects; then also set `settings.bind_address`. |
 | `services.vota.healthCheck.enable` | boolean | `true` | The [health check](#health-check): startup waits for `/healthz`, and a timer restarts the service when it stops answering. Needs a loopback or wildcard `settings.bind_address` (checked at evaluation). |
 | `services.vota.healthCheck.interval` | string (systemd time span) | `"1min"` | How often the timer probes `/healthz`. |
@@ -527,7 +528,7 @@ The configuration holds no secret, so it may live in the world-readable store; A
 | `services.vota.settings.default_purge_gap` | string (duration) | `"4weeks"` | [`default_purge_gap`](../reference/configuration.md#default_purge_gap) |
 | `services.vota.settings.purge_interval` | string (duration) | `"1h"` | [`purge_interval`](../reference/configuration.md#purge_interval) |
 | `services.vota.settings.max_date_horizon` | string (duration) | `"1y"` | [`max_date_horizon`](../reference/configuration.md#max_date_horizon) |
-| `services.vota.settings.default_time_zone` | string | `"UTC"` | [`default_time_zone`](../reference/configuration.md#default_time_zone) |
+| `services.vota.settings.default_time_zone` | string | `config.time.timeZone`, or `"UTC"` when that is `null` | [`default_time_zone`](../reference/configuration.md#default_time_zone): the voting page's zone, and the zone of admin dates given without an offset |
 | `services.vota.settings.trusted_proxies` | list of strings | `[ ]` | [`trusted_proxies`](../reference/configuration.md#trusted_proxies) |
 | `services.vota.settings.nat64_prefixes` | list of strings (IPv6 prefixes of length 32, 40, 48, 56, 64 or 96) | `[ ]` | [`nat64_prefixes`](../reference/configuration.md#nat64_prefixes) |
 | `services.vota.settings.rate_limit.failed_lookups` | integer, 1–4294967295 | `20` | [`rate_limit.failed_lookups`](../reference/configuration.md#rate_limit) |
@@ -560,6 +561,36 @@ Revoked Admin Tokens 2.
 
 As with the plain CLI, only the token goes to stdout, so `TOKEN=$(sudo vota-admin-token create --label ci)` captures it. The exit code is the CLI's (see the [CLI reference](../reference/cli.md#exit-codes)). Arguments reach the CLI literally: the wrapper passes `--expand-environment=no`, so a label such as `'Bob $HOME'` is stored as typed, not with `$HOME` expanded by the service manager. Under the hood the wrapper is `systemd-run --pipe --wait` of a transient unit with the same `DynamicUser`, `StateDirectory` and hardening settings as `vota.service`, so it gets the same user and can write the database, and never a file root owns. Don't run `vota` against `/var/lib/vota/vota.db` directly as root.
 
+### Admin Tokens from files (agenix)
+
+To provision an Admin Token declaratively instead of creating it with `vota-admin-token`, put it in a secret and list the secret in `services.vota.adminTokenFiles`. With [agenix](https://github.com/ryantm/agenix):
+
+```sh
+# On your workstation: a fresh token (or use the shell one-liner of the CLI reference) ...
+vota admin-token generate
+# ... pasted into the secret in the editor agenix opens.
+agenix -e secrets/vota-admin-token.age
+```
+
+```nix
+# configuration.nix
+age.secrets.vota-admin-token.file = ./secrets/vota-admin-token.age;  # root-owned, 0400
+
+services.vota = {
+  enable = true;
+  settings.public_base_url = "https://ballots.example.org/";
+  adminTokenFiles = [ config.age.secrets.vota-admin-token.path ];  # "/run/agenix/vota-admin-token"
+};
+```
+
+The trailing newline the editor may add is trimmed. The service then accepts that token for the admin API, e.g. `VOTA_ADMIN_TOKEN=… vota ballot list`.
+
+How it works: the module adds one `LoadCredential=vota-admin-token-<n>:<path>` per entry (`n` counted from 1), so systemd, as root, copies each file into the service's credentials directory, where only the service's dynamic user can read it. A root-owned `0400` secret therefore needs no looser permissions. The module points the app at the copies with `VOTA_ADMIN_TOKEN_FILES=[%d/vota-admin-token-1,…]` (`%d` is the credentials directory, `/run/credentials/vota.service`). The audit log names the n-th entry's token `token_id=file:<n>`.
+
+- Give **string paths** (as agenix's `.path` is). A Nix path such as `./token` is refused by the option's type, because it would copy the secret into the world-readable Nix store, and so is a string inside `/nix/store` (checked at evaluation, with relative paths and paths with whitespace). `services.vota.settings.admin_token_files` is refused too: it would bypass the credentials.
+- The files are read when the service starts. A missing or malformed file makes the unit fail, and `journalctl -u vota` names the file (never its contents); make sure the secret exists before `vota.service` starts (agenix decrypts its secrets during activation, before services start).
+- **Rotate or revoke** by changing or removing the secret and restarting `vota.service`. Changing the list restarts it on `nixos-rebuild switch`; a changed secret behind the same path does not, so run `systemctl restart vota` after it. `vota-admin-token list` and `revoke` don't see these tokens.
+
 ### The ballot client and shell completions
 
 The module puts the package on the system path, so the admin API client [`vota ballot`](../reference/cli.md#ballot) is there for any user; it needs no access to the service's files, only the URL and an Admin Token. The package installs completion scripts for bash, zsh and fish (`share/bash-completion/completions/vota.bash`, `share/zsh/site-functions/_vota`, `share/fish/vendor_completions.d/vota.fish`): bash picks them up through `programs.bash.completion.enable` (on by default), zsh and fish when `programs.zsh.enable` or `programs.fish.enable` is set.
@@ -589,6 +620,7 @@ Keep the token in a file readable only by you and pass it with `--token-file`, o
 - **User and state.** `DynamicUser=yes` with the name `vota`: the service runs under a UID allocated at start and has no account on the system. `StateDirectory=vota` provides `/var/lib/vota` (a link to `/var/lib/private/vota`, mode `0700`), the only place the service can write; the database and its `-wal`/`-shm` files live there. `UMask=0077`.
 - **Hardening.** `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`, `PrivateDevices=yes`, `PrivateUsers=yes` (off for a port below 1024, since a user namespace would take the capability away again), `NoNewPrivileges=yes`, `ProtectKernelTunables=yes`, `ProtectKernelModules=yes`, `ProtectKernelLogs=yes`, `ProtectControlGroups=yes`, `ProtectClock=yes`, `ProtectHostname=yes`, `ProtectProc=invisible`, `ProcSubset=pid`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, `RestrictNamespaces=yes`, `RestrictRealtime=yes`, `RestrictSUIDSGID=yes`, `LockPersonality=yes`, `MemoryDenyWriteExecute=yes`, `RemoveIPC=yes`, `SystemCallArchitectures=native`, `SystemCallFilter=@system-service ~@privileged ~@resources`, `SystemCallErrorNumber=EPERM`, and an empty `CapabilityBoundingSet=` (only `CAP_NET_BIND_SERVICE` for a port below 1024). A configured Theme or logo folder is readable, everything else outside the state directory read-only or hidden.
 - **Lifecycle.** `Restart=on-failure`; `systemctl stop vota` sends SIGTERM, on which Vota [shuts down gracefully](#stopping-the-server) within `settings.connections.shutdown_grace_period` and exits with status 0. Logs go to the journal: `journalctl -u vota`. The unit sets `NO_COLOR=1`, and logs are plain text in the journal.
+- **Credentials.** With `adminTokenFiles`, one `LoadCredential=vota-admin-token-<n>:<path>` per file and `Environment=VOTA_ADMIN_TOKEN_FILES=[%d/vota-admin-token-1,…]` (see [Admin Tokens from files](#admin-tokens-from-files-agenix)). The `vota-admin-token` wrapper gets neither: the `admin-token` commands don't read token files.
 - **Limits.** `LimitNOFILE=` is `settings.connections.max_open + 512` (1024 by default), so the connection cap is reached before the descriptor limit.
 
 `systemd-analyze security vota.service` rates the unit `1.1 OK` (as measured in the VM test).
@@ -747,4 +779,4 @@ sudo sh -c 'umask 077 && install -d -m 0700 /var/backups/vota && \
 
 ### The VM test
 
-The flake's checks include a NixOS VM test of the module (`checks.x86_64-linux.nixos-vm`, in [`nix/vm-test.nix`](../../nix/vm-test.nix)). It boots a VM with the service under the sub-path `/polls/` and checks: the unit is active and answers `/healthz`; every migration is applied; a token from `vota-admin-token` creates a Ballot through `POST /polls/admin/ballots`; `vota ballot` on the PATH, with that token in `VOTA_ADMIN_TOKEN`, creates and lists a Ballot under `/polls/` (and refuses to run without a token), and its bash completions are installed; the returned Ballot URL serves the voting page and the voter API returns the Ballot with its logo; the service runs as a dynamic user that can write only to its state directory; `vota-admin-token` passes `$HOME`, `${HOME}` and an unset `$VAR` in a label literally; `LimitNOFILE` follows `connections.max_open` and a client that sends nothing is disconnected after `connections.header_read_timeout`; `systemctl stop` ends it gracefully with exit status 0 and no warning or error in the journal; the database survives a restart; admin requests appear in the audit log (with the token's ID, never the token), `admin-token list --json` records the token's last use, and a client behind the proxy that fails the Admin Token check `rate_limit.admin_failed_auth` times gets `429` while other clients go on; `/healthz` refuses requests with `X-Forwarded-For` or `Forwarded`; startup waits for `/healthz` under the base path and the periodic check passes on a healthy service; a frozen service (`kill -STOP`) is restarted by the check and answers again under a new PID. Run it with `nix flake check`, or alone with `nix build .#checks.x86_64-linux.nixos-vm -L`. It uses KVM when available and otherwise runs emulated, which is slower: without KVM the test script takes about three minutes on a 16-core machine (plus the package build, if it isn't cached).
+The flake's checks include a NixOS VM test of the module (`checks.x86_64-linux.nixos-vm`, in [`nix/vm-test.nix`](../../nix/vm-test.nix)). It boots a VM with the service under the sub-path `/polls/` and checks: the unit is active and answers `/healthz`; every migration is applied; a token from `vota-admin-token` creates a Ballot through `POST /polls/admin/ballots`; `vota ballot` on the PATH, with that token in `VOTA_ADMIN_TOKEN`, creates and lists a Ballot under `/polls/` (and refuses to run without a token), and its bash completions are installed; a local Voting Deadline (no offset) given through `vota ballot` is read in the system's zone (`time.timeZone = "Europe/Berlin"`, which `default_time_zone` follows by default); a token from `adminTokenFiles` (a root-owned `0400` file) works for `vota ballot list` and is audited as `token_id=file:1` but never logged or listed by `vota-admin-token`, while a bogus token gets `401`; the returned Ballot URL serves the voting page and the voter API returns the Ballot with its logo; the service runs as a dynamic user that can write only to its state directory; `vota-admin-token` passes `$HOME`, `${HOME}` and an unset `$VAR` in a label literally; `LimitNOFILE` follows `connections.max_open` and a client that sends nothing is disconnected after `connections.header_read_timeout`; `systemctl stop` ends it gracefully with exit status 0 and no warning or error in the journal; the database survives a restart; admin requests appear in the audit log (with the token's ID, never the token), `admin-token list --json` records the token's last use, and a client behind the proxy that fails the Admin Token check `rate_limit.admin_failed_auth` times gets `429` while other clients go on; `/healthz` refuses requests with `X-Forwarded-For` or `Forwarded`; startup waits for `/healthz` under the base path and the periodic check passes on a healthy service; a frozen service (`kill -STOP`) is restarted by the check and answers again under a new PID. Run it with `nix flake check`, or alone with `nix build .#checks.x86_64-linux.nixos-vm -L`. It uses KVM when available and otherwise runs emulated, which is slower: without KVM the test script takes about three minutes on a 16-core machine (plus the package build, if it isn't cached).

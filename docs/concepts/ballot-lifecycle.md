@@ -6,7 +6,7 @@ A **Ballot** is one voter's personal voting form. An admin creates it through th
 
 1. **Created.** `POST /admin/ballots` stores the Ballot with a fresh Ballot Token and fresh Option IDs and returns the public URL `<public_base_url>b/<token>`.
 2. **Open.** Until the **Voting Deadline** the voter can answer on the voting page or through the [voter API](../reference/voter-api.md). While the Ballot has no **Response**, the admin can still edit it, including its Options.
-3. **Answered.** The voter's first Response makes the Ballot Answered. A **Final** Ballot is now locked. An **Editable** Ballot keeps accepting new Responses (the last one wins) until the Voting Deadline. From now on the admin may only change the Group and the Voter Reference, extend the deadline, or delete the Ballot.
+3. **Answered.** The voter's first Response makes the Ballot Answered. On a multiple-choice Ballot with **Allow No Option** (`allow_no_option`), that Response may select no Option at all ("none of these"): it is still a Response, so the Ballot is Answered and its Fallback never applies. Without the setting a Response always selects at least one Option. A **Final** Ballot is now locked. An **Editable** Ballot keeps accepting new Responses (the last one wins) until the Voting Deadline. From now on the admin may only change the Group and the Voter Reference, extend the deadline, or delete the Ballot.
 4. **Closed.** The Voting Deadline is exclusive: from that instant on, no Response is accepted or changed. If there is no Response, the **Fallback** (if any) becomes the result (Auto-fallback). From then on the admin can no longer change the Ballot's content, only the Group and the Voter Reference, until they extend the deadline. A closed Ballot without a Fallback stays editable; an edit that gives it a Fallback applies that Fallback at once, and the Ballot is Auto-fallback.
 5. **Reopened (optional).** Extending the Voting Deadline into the future reopens the Ballot, and an Auto-fallback Ballot can be edited again. See [Deadlines, Fallback and Purge](deadlines-fallback-purge.md).
 6. **Gone.** From the Purge Date on, every lookup treats the Ballot as non-existent. The purge sweep later deletes the row. An admin can also delete a Ballot early with `DELETE /admin/ballots/{id}`.
@@ -17,10 +17,12 @@ The Ballot Status is computed on every request from four inputs: the current tim
 
 | Response? | Voting open (`now < voting_deadline`)? | Fallback? | Ballot Status   | Result                     |
 | --------- | -------------------------------------- | --------- | --------------- | -------------------------- |
-| yes       | either                                 | either    | `answered`      | the Response (`response`)  |
+| yes (possibly of no Option) | either                 | either    | `answered`      | the Response (`response`)  |
 | no        | yes                                    | either    | `unanswered`    | none (`null`)              |
 | no        | no                                     | yes       | `auto_fallback` | the Fallback (`fallback`)  |
 | no        | no                                     | no        | `unanswered`    | none (`null`)              |
+
+"Response?" asks whether the voter submitted one, not whether it selects Options: a Response of no Option (Allow No Option) is a stored Response with `option_ids: []`, and "no Response" is `response: null`. The store keeps the two apart (a `responses` row without `response_options` rows, versus no row at all).
 
 The APIs use the wire names `unanswered`, `answered` and `auto_fallback`. The voting page shows them as "Unanswered", "Answered" and "Auto-fallback".
 
@@ -59,7 +61,7 @@ stateDiagram-v2
 | `POST …/extend` (later Voting Deadline)      | yes        | yes             | yes (reopens)   |
 | `DELETE`                                     | yes        | yes             | yes             |
 
-A content edit is allowed only while the Ballot is Unanswered: not once it has a Response (Answered), so a voter's Response never silently changes meaning, and not once its Fallback has applied (Auto-fallback), so a recorded result doesn't change either. Extending the deadline turns an Auto-fallback Ballot back into Unanswered, and then content edits are allowed again. A Ballot whose deadline passed **without** a Fallback is Unanswered, so it stays editable; a `PATCH` with a new `voting_deadline` reopens it too, and a `PATCH` that gives it a Fallback applies that Fallback at once (Auto-fallback). The rules are tested in `tests/admin_edit.rs` and `tests/admin_edit_after_fallback.rs`. An edit naming only `group` and/or `voter_reference` is a *bookkeeping* edit. It is allowed at any time because the voter never sees those fields. Any other field present in the body makes it a *content* edit, even if its value is unchanged.
+A content edit is allowed only while the Ballot is Unanswered: not once it has a Response (Answered), so a voter's Response never silently changes meaning, and not once its Fallback has applied (Auto-fallback), so a recorded result doesn't change either. Extending the deadline turns an Auto-fallback Ballot back into Unanswered, and then content edits are allowed again. A Ballot whose deadline passed **without** a Fallback is Unanswered, so it stays editable; a `PATCH` with a new `voting_deadline` reopens it too, and a `PATCH` that gives it a Fallback applies that Fallback at once (Auto-fallback). The rules are tested in `tests/admin_edit.rs` and `tests/admin_edit_after_fallback.rs`. Turning Allow No Option on or off is a content edit too, so a recorded Response of no Option can never be left on a Ballot that no longer allows it: once Answered, the edit gets `409 already_answered`, and before that the revision guard (below) refuses a Response of no Option made on the page as it was. An edit naming only `group` and/or `voter_reference` is a *bookkeeping* edit. It is allowed at any time because the voter never sees those fields. Any other field present in the body makes it a *content* edit, even if its value is unchanged.
 
 ## Concurrency guarantees
 

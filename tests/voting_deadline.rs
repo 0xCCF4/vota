@@ -102,7 +102,7 @@ async fn a_form_response_after_the_deadline_shows_the_closed_page_and_records_no
             "{html}"
         );
         assert!(
-            html.contains("Voting closed. No answer was given."),
+            html.contains(r#"<p class="closed">No answer was given.</p>"#),
             "{html}"
         );
         assert!(!html.contains("<form"), "{html}");
@@ -129,7 +129,10 @@ async fn after_the_deadline_the_page_shows_the_voters_response_read_only() {
 
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_string(response).await;
-        assert!(html.contains("Voting closed. You chose:"), "{html}");
+        assert!(
+            html.contains(r#"<p class="closed">You chose</p>"#),
+            "{html}"
+        );
         assert!(
             html.contains("<li>Pizza</li>") && html.contains("<li>Tacos</li>"),
             "{html}"
@@ -137,7 +140,7 @@ async fn after_the_deadline_the_page_shows_the_voters_response_read_only() {
         assert!(!html.contains("<li>Sushi</li>"), "{html}");
         assert!(!html.contains("<form"), "{html}");
         assert!(
-            html.contains(r#"<p class="status">Status: Answered</p>"#),
+            html.contains(r#"<p class="status" data-state="closed" title="Ballot Status: Answered"><span class="visually-hidden">Status: </span>Closed</p>"#),
             "{html}"
         );
         app.clock.set(common::start_time());
@@ -158,11 +161,11 @@ async fn after_the_deadline_without_response_or_fallback_the_ballot_stays_unansw
     assert_eq!(view["result"], json!(null), "{view}");
     assert_eq!(view["voting_open"], json!(false), "{view}");
     assert!(
-        html.contains("Voting closed. No answer was given."),
+        html.contains(r#"<p class="closed">No answer was given.</p>"#),
         "{html}"
     );
     assert!(
-        html.contains(r#"<p class="status">Status: Unanswered</p>"#),
+        html.contains(r#"<p class="status" data-state="closed" title="Ballot Status: Unanswered"><span class="visually-hidden">Status: </span>Closed</p>"#),
         "{html}"
     );
     assert!(!html.contains("<form"), "{html}");

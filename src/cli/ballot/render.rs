@@ -27,14 +27,34 @@ fn labels(options: Option<&Value>) -> String {
     }
 }
 
-/// The labels of the Options with these IDs, in the order given.
+/// The labels of a Response's or result's Options, like [`labels`], but an
+/// empty list (an answer of no Option, on a Ballot that allows it) is
+/// `(none)`, told apart from `-` (no answer at all).
+fn chosen(options: Option<&Value>) -> String {
+    match options.and_then(Value::as_array) {
+        Some(options) if options.is_empty() => "(none)".into(),
+        _ => labels(options),
+    }
+}
+
+/// The labels of the Options with these IDs, in the order given, as
+/// [`chosen`] shows them.
 fn labels_of(ballot: &Value, ids: Option<&Value>) -> String {
     let ids = ids.and_then(Value::as_array).cloned().unwrap_or_default();
     let options: Vec<Value> = (ballot["options"].as_array().into_iter().flatten())
         .filter(|option| ids.contains(&option["id"]))
         .cloned()
         .collect();
-    labels(Some(&Value::Array(options)))
+    chosen(Some(&Value::Array(options)))
+}
+
+/// `yes` or `no` for a boolean at `key`; `-` when it is missing.
+fn yes_no(value: &Value, key: &str) -> String {
+    match value.get(key).and_then(Value::as_bool) {
+        Some(true) => "yes".into(),
+        Some(false) => "no".into(),
+        None => text(value, key),
+    }
 }
 
 /// The summary of a new Ballot, for stderr.
@@ -83,7 +103,7 @@ pub(super) fn ballot(ballot: &Value) -> String {
                 Some("fallback") => "from the Fallback".to_owned(),
                 _ => format!("source {}", text(result, "source")),
             };
-            format!("{} ({source})", labels(result.get("options")))
+            format!("{} ({source})", chosen(result.get("options")))
         }
         _ => "-".into(),
     };
@@ -97,6 +117,7 @@ pub(super) fn ballot(ballot: &Value) -> String {
             ("Group", text(ballot, "group")),
             ("Voter Reference", text(ballot, "voter_reference")),
             ("Choice Mode", text(ballot, "choice_mode")),
+            ("Allow No Option", yes_no(ballot, "allow_no_option")),
             ("Submission Mode", text(ballot, "submission_mode")),
             ("Voting Deadline", text(ballot, "voting_deadline")),
             ("Purge Date", text(ballot, "purge_date")),
@@ -136,7 +157,7 @@ fn lines(rows: &[(&str, String)]) -> String {
 
 /// The list as a table: ID, STATUS, GROUP, VOTER-REFERENCE,
 /// VOTING-DEADLINE and RESULT (the result's labels, last because they are
-/// free text).
+/// free text; `(none)` for an answer of no Option, `-` for no result).
 pub(super) fn table(list: &Value) -> String {
     let rows: Vec<[String; 6]> = (list["ballots"].as_array().into_iter().flatten())
         .map(|ballot| {
@@ -147,7 +168,7 @@ pub(super) fn table(list: &Value) -> String {
                 text(ballot, "voter_reference"),
                 text(ballot, "voting_deadline"),
                 match ballot.get("result") {
-                    Some(result) if result.is_object() => labels(result.get("options")),
+                    Some(result) if result.is_object() => chosen(result.get("options")),
                     _ => "-".into(),
                 },
             ]

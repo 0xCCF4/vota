@@ -34,6 +34,21 @@ let
   ];
   lowPort = cfg.settings.port < 1024;
 
+  # Admin Token files reach the service as systemd credentials: systemd
+  # (as root) copies each into the service's credentials directory, readable
+  # by its dynamic user, so a root-only secret (agenix) needs no looser
+  # permissions. The n-th file (from 1) is the credential
+  # `vota-admin-token-<n>`, and the audit log's `token_id=file:<n>`.
+  adminTokenCredentials = lib.imap1 (n: path: {
+    name = "vota-admin-token-${toString n}";
+    inherit path;
+  }) cfg.adminTokenFiles;
+  # `%d` is the credentials directory (a systemd specifier). Unquoted list
+  # entries are fine: the names hold no `,`, `[`, `]` or spaces.
+  adminTokenFilesEnv = "VOTA_ADMIN_TOKEN_FILES=[${
+    lib.concatMapStringsSep "," (credential: "%d/${credential.name}") adminTokenCredentials
+  }]";
+
   # Shared by the service and the admin-token CLI's transient unit, so both
   # run as the same dynamic user in the same sandbox.
   sandbox = {
@@ -213,6 +228,24 @@ in
       description = "The Vota package to run.";
     };
 
+    adminTokenFiles = mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      example = [ "/run/agenix/vota-admin-token" ];
+      description = ''
+        Files that each hold one pre-provisioned Admin Token (`vta_` and 43
+        base64url characters, e.g. from `vota admin-token generate`), such
+        as agenix secrets. The admin API accepts them beside the tokens of
+        `vota-admin-token create`. Absolute paths outside the Nix store, as
+        strings: a Nix path would copy the secret into the world-readable
+        store. They are passed in with systemd's `LoadCredential`, so a
+        root-owned `0400` file works. Read when the service starts: a
+        missing or malformed file stops it; a changed file takes effect,
+        and a removed entry stops its token working, at the next restart.
+        Not listed or revoked by `vota-admin-token`.
+      '';
+    };
+
     openFirewall = mkOption {
       type = types.bool;
       default = false;
@@ -318,9 +351,17 @@ in
           };
           default_time_zone = mkOption {
             type = types.str;
-            default = "UTC";
+            # The system's zone; `time.timeZone` is null when it is set
+            # imperatively (timedatectl), and the app's own default is UTC.
+            default = if config.time.timeZone != null then config.time.timeZone else "UTC";
+            defaultText = lib.literalExpression ''if config.time.timeZone != null then config.time.timeZone else "UTC"'';
             example = "Europe/Berlin";
-            description = "IANA time zone for times shown on the voting page without JavaScript.";
+            description = ''
+              IANA time zone for times shown on the voting page without
+              JavaScript, and in which the admin API reads a Voting Deadline
+              or Purge Date given without a UTC offset. Defaults to the
+              system's `time.timeZone`, or `UTC` when that is unset.
+            '';
           };
           trusted_proxies = mkOption {
             type = types.listOf types.str;
@@ -399,6 +440,19 @@ in
         message = "services.vota.settings.database_path must lie directly in ${stateDir}, the service's StateDirectory.";
       }
       {
+        assertion = !(cfg.settings ? admin_token_files);
+        message = "services.vota.settings.admin_token_files is not supported; use services.vota.adminTokenFiles, which passes the files in as systemd credentials.";
+      }
+    ]
+    ++ map (path: {
+      assertion =
+        lib.hasPrefix "/" path
+        && !lib.hasPrefix "${builtins.storeDir}/" path
+        && builtins.match ".*[[:space:]].*" path == null;
+      message = "services.vota.adminTokenFiles: ${path} must be an absolute path without whitespace, outside the Nix store (a secret there is world-readable).";
+    }) cfg.adminTokenFiles
+    ++ [
+      {
         assertion = cfg.healthCheck.enable -> probeable;
         message = "services.vota.healthCheck needs a loopback or wildcard settings.bind_address (/healthz answers only loopback peers); set healthCheck.enable = false for ${bindAddress}.";
       }
@@ -421,6 +475,11 @@ in
       restartTriggers = [ configFile ];
       serviceConfig = sandbox // {
         ExecStart = "${lib.getExe cfg.package} --config ${configFile} serve";
+        # The `%` of a path is escaped: systemd would read it as a specifier.
+        LoadCredential = map (
+          credential: "${credential.name}:${lib.replaceStrings [ "%" ] [ "%%" ] credential.path}"
+        ) adminTokenCredentials;
+        Environment = sandbox.Environment ++ lib.optional (adminTokenCredentials != [ ]) adminTokenFilesEnv;
         # Default KillSignal (SIGTERM): the app shuts down gracefully on it,
         # within `settings.connections.shutdown_grace_period`.
         Restart = "on-failure";

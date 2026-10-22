@@ -36,10 +36,13 @@ fn hostile_texts() -> Vec<String> {
     ]
 }
 
-/// Timestamps that are not RFC 3339 with an explicit offset.
+/// Timestamps that are neither RFC 3339 with an explicit offset nor an
+/// exact local date-time.
 fn malformed_timestamps() -> Vec<Value> {
     vec![
-        json!("2030-02-01T12:00:00"),
+        json!("2030-02-01T12"),
+        json!("2030-02-01 12:00:00"),
+        json!("2030-02-01T12:00\u{200B}"),
         json!("2030-02-01"),
         json!("2030-02-30T12:00:00Z"),
         json!("2030-02-01T25:00:00Z"),

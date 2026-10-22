@@ -165,6 +165,7 @@ fn invalid_response(
 ) -> Response {
     let message = match (problem, ballot.choice_mode) {
         (FormProblem::WrongCount, ChoiceMode::Single) => "Select exactly one Option.",
+        // Never with Allow No Option: then any number of Options is fine.
         (FormProblem::WrongCount, ChoiceMode::Multiple) => "Select at least one Option.",
         // `NotOnBallot` is answered by `refused` instead; should it get
         // here, it reads like a malformed value.
@@ -206,7 +207,8 @@ fn render_confirmation(state: &AppState, ballot: &Ballot, selection: &Selection)
     }
 }
 
-/// What `confirm.html` gets: the Ballot and the chosen Options (by ID).
+/// What `confirm.html` gets: the Ballot and the chosen Options (by ID; none
+/// if the Ballot allows no Option and the voter chose none).
 pub(super) fn confirmation_context(
     ballot: &Ballot,
     selected: &[OptionId],
@@ -298,6 +300,9 @@ pub(super) fn voting_page_context(
         description => description_html(ballot),
         options => all,
         multiple => ballot.choice_mode == ChoiceMode::Multiple,
+        // Whether the voter may answer with no Option (multiple choice
+        // only); `selected` is then possibly empty once answered.
+        allow_no_option => ballot.allow_no_option,
         editable => editable,
         answered => answered,
         // Whether the Response is shown without a form.
@@ -321,7 +326,7 @@ pub(super) fn voting_page_context(
         selected => options_context(ballot, current),
         message => message,
         deadline_utc => crate::api::rfc3339(ballot.voting_deadline),
-        deadline_local => deadline.format("%A, %-d %B %Y, %H:%M %Z").to_string(),
+        deadline_local => deadline.format("%a %-d %b %Y, %H:%M %Z").to_string(),
         status => status_label(ballot.status(now)),
         // The form's Response is recorded only if the Ballot still stands
         // as shown. The app inserts the hidden field itself

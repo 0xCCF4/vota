@@ -1,7 +1,9 @@
 //! Admin Token secrets (ADR 0001): 256 CSPRNG bits, base64url, with a
 //! recognisable prefix. Only their SHA-256 hash is ever stored. Also the
 //! expiry rules: an expiry must lie in the future when the token is created,
-//! and a token is expired from its expiry on (inclusive).
+//! and a token is expired from its expiry on (inclusive). And the Admin
+//! Tokens provisioned from files (`FileAdminTokens`), also kept as hashes
+//! only.
 
 use std::fmt;
 
@@ -13,7 +15,8 @@ use crate::domain::token_generator::random_base64url;
 /// Recognisable prefix of every Admin Token, e.g. for secret scanners.
 pub const PREFIX: &str = "vta_";
 
-const SECRET_BYTES: usize = 32;
+/// Random bytes in an Admin Token: 43 base64url characters after the prefix.
+pub(crate) const SECRET_BYTES: usize = 32;
 
 /// A freshly generated Admin Token secret. Its `Debug` output is redacted so it
 /// can't end up in logs by accident.
@@ -46,6 +49,51 @@ pub(crate) struct AdminTokenHash(pub Vec<u8>);
 impl AdminTokenHash {
     pub fn of(presented: &str) -> Self {
         Self(Sha256::digest(presented.as_bytes()).to_vec())
+    }
+
+    /// Whether both are the same hash, in time independent of where they
+    /// differ. (Comparing hashes leaks nothing useful about the token
+    /// anyway, as the database's lookup by hash relies on; this costs
+    /// nothing more.)
+    fn matches(&self, other: &Self) -> bool {
+        let diff = (self.0.iter().zip(&other.0)).fold(0, |diff, (a, b)| diff | (a ^ b));
+        self.0.len() == other.0.len() && diff == 0
+    }
+}
+
+/// A well-formed Admin Token read from a file (`admin_token_files`), kept
+/// as its hash only: the secret is dropped once it is hashed.
+pub(crate) struct ProvisionedAdminToken(AdminTokenHash);
+
+impl ProvisionedAdminToken {
+    pub(crate) fn new(secret: &str, _: crate::input::Sanitized) -> Self {
+        Self(AdminTokenHash::of(secret))
+    }
+}
+
+/// The Admin Tokens provisioned from files, in the order of
+/// `admin_token_files`. They have no ID, label, expiry or last use in the
+/// database; one stops working when its file leaves the list (at the next
+/// start).
+#[derive(Default)]
+pub(crate) struct FileAdminTokens(Vec<ProvisionedAdminToken>);
+
+impl FileAdminTokens {
+    pub(crate) fn new(tokens: Vec<ProvisionedAdminToken>) -> Self {
+        Self(tokens)
+    }
+
+    /// The position in `admin_token_files` (counted from 1) of the first file
+    /// holding the token `presented` is. Every file is compared, match or
+    /// not.
+    pub(crate) fn position(&self, presented: &str) -> Option<usize> {
+        let presented = AdminTokenHash::of(presented);
+        self.0
+            .iter()
+            .enumerate()
+            .filter(|(_, token)| token.0.matches(&presented))
+            .map(|(index, _)| index + 1)
+            .min()
     }
 }
 

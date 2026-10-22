@@ -12,7 +12,7 @@ use common::{TestApp, body_string};
 /// `html` without the voting page's own script tag (which the app includes
 /// on every voting page), so what remains can be checked for echoed input.
 fn without_the_apps_script(html: &str) -> String {
-    let Some(start) = html.find(r#"<script src="/assets/app/ballot.js?v="#) else {
+    let Some(start) = html.find(r#"<script type="module" src="/assets/app/"#) else {
         return html.to_owned();
     };
     let end = start + html[start..].find("</script>").unwrap() + "</script>".len();

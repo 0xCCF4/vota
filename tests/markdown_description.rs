@@ -529,7 +529,7 @@ async fn the_description_shows_on_the_confirmation_step_answered_and_closed_page
 
     app.clock.set("2030-01-22T12:00:00Z".parse().unwrap());
     let closed = page(&app, token).await;
-    assert!(closed.contains("Voting closed"), "{closed}");
+    assert!(closed.contains(r#"<p class="closed">"#), "{closed}");
     assert_eq!(description_html(&closed).trim(), expected, "closed");
 }
 

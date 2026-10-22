@@ -50,7 +50,8 @@ enum Command {
     /// Run the web server (the default when no subcommand is given).
     #[cfg(feature = "server")]
     Serve,
-    /// Manage Admin Tokens in the configured database (the server need not run).
+    /// Manage Admin Tokens in the configured database (the server need not
+    /// run), or generate one for an Admin Token file.
     #[cfg(feature = "server")]
     #[command(subcommand)]
     AdminToken(admin_token::AdminTokenCommand),
@@ -77,14 +78,20 @@ impl Cli {
     /// Runs the parsed command; returns the exit code of a command that
     /// sets its own (`ballot`).
     pub async fn run(self) -> anyhow::Result<ExitCode> {
-        // The client and the completions need no configuration and no
-        // database, and create no files. They log nothing, so nothing (such
+        // The client, the completions and `admin-token generate` need no
+        // configuration and no database, and create no files. They log nothing, so nothing (such
         // as the Admin Token) can leak into a log.
         match self.command {
             #[cfg(feature = "client")]
             Some(Command::Ballot(ballot)) => Ok(ballot.run().await),
             Some(Command::Completions { shell }) => {
                 print_completions(shell)?;
+                Ok(ExitCode::SUCCESS)
+            }
+            // Needs neither the configuration nor the database.
+            #[cfg(feature = "server")]
+            Some(Command::AdminToken(admin_token::AdminTokenCommand::Generate)) => {
+                admin_token::generate();
                 Ok(ExitCode::SUCCESS)
             }
             #[cfg(feature = "server")]

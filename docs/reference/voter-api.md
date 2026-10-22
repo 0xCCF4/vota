@@ -42,6 +42,7 @@ curl -s http://localhost:8080/api/b/fqps4Y5QXH9JOgytT1czCw
 ```json
 {
   "accent_color": "#e07a1f",
+  "allow_no_option": false,
   "choice_mode": "multiple",
   "description": "Pick **every** date you can make.\n\nDetails: [wiki](https://wiki.example.org/offsite)",
   "fallback": {
@@ -71,14 +72,15 @@ curl -s http://localhost:8080/api/b/fqps4Y5QXH9JOgytT1czCw
 | `revision`        | integer, 0 or more         | The Ballot's revision: every admin edit of what the voter sees or what governs the Response advances it (edits of only the Group or Voter Reference don't). Send it back with the Response. |
 | `description`     | string or `null`           | The sanitised **Markdown source**, not HTML. A client renders (and sanitises) it as it sees fit. |
 | `options`         | array of `{id, label}`     | In display order. Submit the `id`s. |
-| `choice_mode`     | `"single"` / `"multiple"`  | Single: exactly one Option. Multiple: one or more. |
+| `choice_mode`     | `"single"` / `"multiple"`  | Single: exactly one Option. Multiple: one or more (or none, see `allow_no_option`). |
+| `allow_no_option` | boolean                    | Allow No Option: the voter may answer with no Option at all (`"option_ids": []`). Only ever `true` on a multiple-choice Ballot. |
 | `submission_mode` | `"final"` / `"editable"`   | Final: one Response, then locked. Editable: may be changed until the deadline. |
 | `voting_deadline` | RFC 3339 UTC               | Exclusive: at this instant voting is closed. |
 | `voting_open`     | boolean                    | `now < voting_deadline`. |
 | `status`          | `"unanswered"` / `"answered"` / `"auto_fallback"` | See [Ballot lifecycle](../concepts/ballot-lifecycle.md). |
 | `fallback`        | `{option_ids}` or `null`   | What is recorded if no Response comes by the deadline. Shown from the start. Only `result` says whether it has been applied. |
 | `result`          | `{source, option_ids}` or `null` | `source` is `"response"` or `"fallback"`. |
-| `response`        | `{option_ids, answered_at, changed_at}` or `null` | The voter's current Response. |
+| `response`        | `{option_ids, answered_at, changed_at}` or `null` | The voter's current Response; `null` without one. `option_ids` is `[]` for a Response of no Option. |
 | `theme`           | string                     | The Theme the page is rendered in. If the Ballot's Theme has since been removed, this is the default `classic`. |
 | `accent_color`    | `#rrggbb` or `null`        | The accent colour Theme Tweak. |
 | `logo_url`        | string or `null`           | Absolute URL (`<public_base_url>assets/logos/<name>`, e.g. `https://example.org/polls/assets/logos/acme`), or `null` without a logo or if it has been removed since. |
@@ -89,7 +91,7 @@ Request: `Content-Type: application/json`, body exactly `{"option_ids": [...], "
 
 | Field        | Type             | Rules |
 | ------------ | ---------------- | ----- |
-| `option_ids` | array of strings | Each exactly 11 canonical base64url characters (an Option ID as the server writes it), no duplicates, each one of this Ballot's current Options, and the count obeys the Choice Mode: exactly one for single choice, at least one for multiple choice. Never empty. |
+| `option_ids` | array of strings | Each exactly 11 canonical base64url characters (an Option ID as the server writes it), no duplicates, each one of this Ballot's current Options, and the count obeys the Choice Mode: exactly one for single choice, at least one for multiple choice. Empty (`[]`, "none of these") only if the Ballot has `allow_no_option`: that is a Response like any other, so the Ballot becomes Answered, a Final Ballot is then locked, and the Fallback no longer applies. |
 | `revision`   | integer          | Required: the `revision` of the Ballot as the client fetched it (and showed it to the voter). A JSON integer from 0 to 2^63−1; not a string, float (`1.0`) or `null`. If it is no longer the Ballot's revision, nothing is recorded (`409 ballot_changed`), so a Response is never recorded against wording, Options or rules the voter didn't see. |
 
 The checks run in this order:
@@ -154,7 +156,7 @@ The `422` messages for `PUT`:
 | ---------------- | --------- |
 | `option_ids[i]`  | `not an Option ID` (malformed) |
 | `option_ids[i]`  | `duplicate Option` |
-| `option_ids`     | `select an Option` (empty list) |
+| `option_ids`     | `select an Option` (empty list, unless the Ballot has `allow_no_option`) |
 | `option_ids`     | `single choice: select exactly one Option` |
 | `option_ids`     | `missing`, `wrong type or value` |
 | `revision`       | `missing` |
@@ -213,16 +215,18 @@ curl -s http://localhost:8080/api/b/kKNCBW_dN2-Luu8lQj4q5A
 
 ## The voting page without JavaScript
 
-`GET /b/{token}` renders the Ballot in its Theme. It works fully without JavaScript. Times are shown in the configured [`default_time_zone`](configuration.md#default_time_zone), e.g. `Tuesday, 1 December 2026, 13:00 CET`. The page shows, depending on the state:
+`GET /b/{token}` renders the Ballot in its Theme. It works fully without JavaScript. Times are shown in the configured [`default_time_zone`](configuration.md#default_time_zone), e.g. `Tue 1 Dec 2026, 13:00 CET`. The page shows, depending on the state:
 
 | State                                     | The page shows |
 | ----------------------------------------- | -------------- |
-| Open, no Response                         | The form (radio buttons for single choice, checkboxes for multiple), the deadline, a note whether the answer can be changed later, and the Fallback ("If you don't answer by the deadline, this will be recorded: …") if there is one. |
-| Open, Editable, answered                  | The form pre-filled with the current Response, "Your answer has been saved. You can change it until voting closes.", button "Change answer". |
-| Open, Final, answered                     | Read-only: "Your answer has been recorded. You chose: …". |
-| Closed with a Response                    | "Voting closed. You chose: …". |
-| Closed, no Response, Fallback             | "Voting closed. No answer was given. Fallback applied: …". |
-| Closed, no Response, no Fallback          | "Voting closed. No answer was given." |
+| Open, no Response                         | A status pill "Open", the deadline, the form (Options as cards: radio buttons for single choice, checkboxes for multiple, under "Choose any number of options (or none)" with Allow No Option), "You can change your answer until then." (Editable) or "Once you submit your answer, you cannot change it." beside the button (Final), and, if there is a Fallback, its Options marked "default" on their cards with the hint "No answer by the deadline? The Option marked default will be recorded." |
+| Open, Editable, answered                  | "Answered", the form pre-filled with the current Response, "Your answer is saved. You can change it until then.", button "Change answer". |
+| Open, Final, answered                     | Read-only: "Answered", "Your answer has been recorded." and "You chose" with the chosen Options as chips ("You chose no option." for a Response of no Option). |
+| Closed with a Response                    | "Closed", "You chose" with the chosen Options as chips ("You chose no option." for a Response of no Option). |
+| Closed, no Response, Fallback             | "Closed", "No answer was given, so this was recorded:" with the Fallback's Options as chips. |
+| Closed, no Response, no Fallback          | "Closed", "No answer was given." |
+
+The pill's tooltip names the Ballot Status (`Ballot Status: Auto-fallback`).
 
 ### The form post
 
@@ -230,7 +234,7 @@ The form posts to its own URL (`POST /b/{token}`) as `application/x-www-form-url
 
 | Field     | Values |
 | --------- | ------ |
-| `option`  | An Option ID. Repeated once per selected Option. |
+| `option`  | An Option ID. Repeated once per selected Option. Absent when nothing is ticked: on a Ballot with Allow No Option that is the Response of no Option (the body then holds only `revision`, and `confirm`); otherwise the notice "Select at least one Option.". A body with any other field is still unreadable, never taken for an empty selection. |
 | `confirm` | Absent, or exactly one `yes` (sent by the confirmation step's button). |
 | `revision` | Required, exactly once: the Ballot's revision as the page showed it, from the hidden field `<input type="hidden" name="revision" value="…">` that the voting page's form and the confirmation step's form carry (the app inserts it into every `<form method="post">` of those pages, whatever the Theme; a form that already has an input named `revision`, as older Themes' templates do, is left as it is). Plain decimal digits (no sign, leading zero or spaces). |
 
@@ -251,7 +255,7 @@ x-content-type-options: nosniff
 content-length: 0
 ```
 
-**Final Ballot: two steps.** A post *without* `confirm=yes` stores nothing. It answers `200` with the confirmation page (`confirm.html`), which lists the choice, warns "You cannot change your answer after you confirm it.", and holds a form that posts the same `option` values and `revision` again with `confirm=yes`. That second post records the Response and redirects (`303`) to the page, which now shows the Response read-only.
+**Final Ballot: two steps.** A post *without* `confirm=yes` stores nothing. It answers `200` with the confirmation page (`confirm.html`), which lists the choice (or says "You chose no option."), warns "You cannot change your answer after you confirm it.", and holds a form that posts the same `option` values and `revision` again with `confirm=yes`. That second post records the Response and redirects (`303`) to the page, which now shows the Response read-only.
 
 ```sh
 curl -s -i -X POST http://localhost:8080/b/zkt_58VYY9V_Om4Gr5bjsQ -d option=JozWzVChWqQ -d revision=0
@@ -273,7 +277,7 @@ A problem re-renders the voting page with a notice (`<p class="message" role="al
 | Status | Notice | Cause |
 | ------ | ------ | ----- |
 | `422` | Select exactly one Option. | Single choice: none or several selected. |
-| `422` | Select at least one Option. | Multiple choice: none selected. |
+| `422` | Select at least one Option. | Multiple choice without Allow No Option: none selected. |
 | `422` | That Option is not part of this Ballot. | A value that is not an Option ID at all. |
 | `422` | Select each Option only once. | The same Option twice. |
 | `422` | The confirmation was not valid. Please try again. | `confirm` other than a single `yes`. |
@@ -295,17 +299,17 @@ The not-found page is neutral and unthemed: "Not found. This link does not lead 
 
 ## The voting page with JavaScript
 
-The app inserts its own script (`/assets/app/ballot.js`) and stylesheet (`/assets/app/ballot.css`) into every voting page, right before `</head>`. Themes cannot remove them. With JavaScript the script:
+The app inserts its own script (native ES modules under `/assets/app/<version>/`, entry `main.js`) and stylesheet (`/assets/app/ballot.css`) into every voting page, right before `</head>`. Themes cannot remove them. Browsers without module support get the plain page, which works fully. With JavaScript the script:
 
-- rewrites the `<time datetime>` deadline into the voter's local time zone and adds a live countdown, corrected for a skewed client clock using the server's "now". At zero it disables the form and reloads to the closed view.
-- submits the form through `PUT /api/b/{token}/response` (with the page's `revision`) without leaving the page, with a dialog showing "Saving…", then "Saved ✓" or the error. The page body is then refreshed in place.
-- on a Final Ballot asks for confirmation in a dialog instead of the confirmation page.
-- maps errors to messages: `voting_closed`, `already_answered` and `ballot_changed` show a message and reload; `422` shows the server's `message`; `429` shows "Too many requests, try again later."; `404` shows "This Ballot could not be found. It may have been deleted." and reloads.
+- rewrites every `<time datetime>` into the voter's local time zone, short and without a zone name ("Today, 18:00", "Tomorrow, 09:30", "Tue 1 Dec, 13:00", with the year only when it isn't this year), with the precise date and zone as its tooltip; and fills the template's countdown placeholder ("in 2 days, 4 hours"), corrected for a skewed client clock using the server's "now". At the deadline it disables the form and reloads to the closed view, with or without a placeholder.
+- on an **Editable** Ballot hides the Submit button and saves every change at once through `PUT /api/b/{token}/response` (with the page's `revision`): the changed Options show "Saving…", then a fading "Saved" highlight, or "Not saved" in red until resolved, and a status line (`role="status"`) says the same. At most one request is in flight; changes made meanwhile are coalesced and the latest selection is sent next (multiple choice waits 400 ms for further clicks). With Allow No Option, unticking every box saves the Response of no Option, and while the Ballot has no Response the Save button stays visible, so the voter can save "no Option" without ticking anything first. Transient failures (no connection, timeout, `5xx`, `429` with its `Retry-After`) are retried after 1, 2, 4 and 8 seconds, then every 15 seconds, for about two minutes ("Not saved, retrying…", with "Retry now"); coming back online or to the tab retries at once. Without Allow No Option an empty multiple-choice selection is not sent ("Not saved: select at least one Option."). Leaving the page while something is not saved asks for confirmation. After the first save the page body is refreshed in place.
+- on a **Final** Ballot keeps the Submit button: it asks for confirmation in a dialog instead of the confirmation page ("You chose no option." for an empty selection with Allow No Option; without it, an empty selection is refused in the page), then saves with a dialog showing "Saving…", then "Saved ✓" or the error. The page body is then refreshed in place.
+- maps errors to messages: `voting_closed`, `already_answered` and `ballot_changed` show a message in a dialog and reload; `404` shows "This Ballot could not be found. It may have been deleted." and reloads; these and other `4xx` are never retried. `422` shows the server's `message`; `429` shows "Too many requests, try again later."
 
-The script gets what it needs from `data-*` attributes on its own `<script>` tag (`data-api`, `data-page`, `data-deadline`, `data-now`, `data-open`, `data-revision`, `data-choice-mode`, `data-submission-mode`, `data-needs-confirmation`), never from inline script:
+The script gets what it needs from `data-*` attributes on its own `<script type="module" id="vota-enhancement">` tag (`data-api`, `data-page`, `data-deadline`, `data-now`, `data-open`, `data-revision`, `data-choice-mode`, `data-submission-mode`, `data-needs-confirmation`, `data-allow-no-option`, `data-answered`), never from inline script:
 
 ```html
-<script src="/assets/app/ballot.js?v=15290a99132a5f48" defer data-api="/api/b/ClwSuvpBK5TgduvIOXZ9ng/response" data-page="/b/ClwSuvpBK5TgduvIOXZ9ng" data-deadline="2026-12-01T12:00:00Z" data-now="2026-10-17T10:52:09.659395927Z" data-open="true" data-revision="0" data-choice-mode="single" data-submission-mode="editable" data-needs-confirmation="false"></script>
+<script type="module" src="/assets/app/0d4c1e7a9b2f6835/main.js" id="vota-enhancement" data-api="/api/b/ClwSuvpBK5TgduvIOXZ9ng/response" data-page="/b/ClwSuvpBK5TgduvIOXZ9ng" data-deadline="2026-12-01T12:00:00Z" data-now="2026-10-17T10:52:09.659395927Z" data-open="true" data-revision="0" data-choice-mode="single" data-submission-mode="editable" data-needs-confirmation="false" data-allow-no-option="false" data-answered="false"></script>
 ```
 
 It makes no requests to other hosts. For what a Theme must keep so the script works, see the [Themes and logos guide](../guides/themes-and-logos.md#the-voting-pages-script).

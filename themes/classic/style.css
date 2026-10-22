@@ -1,26 +1,75 @@
-/* Vota built-in Theme "classic" (the default): a light card on a soft
- * background. No external fonts or images.
+/* Vota built-in Theme "classic" (the default): a calm card on a soft
+ * background, light or dark as the voter's system prefers. No external
+ * fonts or images.
  *
  * Custom properties a Ballot's Theme Tweaks set (see base.html):
- *   --accent           the accent colour (buttons, highlights)
+ *   --accent           the accent colour (selection, buttons, highlights)
  *   --accent-contrast  black or white, whichever reads better on --accent
- * Text and links never use --accent, so contrast holds for any accent. */
+ * Text and links never use --accent, so contrast holds for any accent.
+ *
+ * Scales: spacing --space-1 … --space-7 (0.25rem … 3rem), type --step--1 …
+ * --step-3; colours as tokens below, the states (selected, pending, saved,
+ * failed) built from them. */
 
 :root {
   color-scheme: light;
   --accent: #2557a7;
   --accent-contrast: #ffffff;
-  --bg: #eef1f5;
+  --bg: #f3f5f8;
   --surface: #ffffff;
-  --text: #1c2430;
-  --muted: #4f5b6b;
-  --border: #c9d1dc;
+  --surface-sunken: #f6f8fb;
+  --text: #17202c;
+  --muted: #535e6d;
+  --border: #d6dce4;
+  --border-strong: #aeb7c3;
   --link: #1d4f9c;
-  --focus: #0b2e66;
-  --danger: #a4161a;
-  --danger-bg: #fdeceb;
-  --notice-bg: #f3f6fa;
-  --radius: 0.75rem;
+  --focus: #1d4ed8;
+  --danger: #b42318;
+  --danger-bg: #fef3f2;
+  --success: #067647;
+  --success-bg: #e3f5ea;
+  --notice-bg: #eef3fa;
+  --selected-bg: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  --shadow: 0 1px 2px rgb(16 24 40 / 5%), 0 8px 28px rgb(16 24 40 / 7%);
+  --radius: 1rem;
+  --radius-sm: 0.625rem;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --step--1: 0.875rem;
+  --step-0: 1rem;
+  --step-1: 1.125rem;
+  --step-2: 1.375rem;
+  --step-3: clamp(1.5rem, 1.25rem + 1.2vw, 2rem);
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --accent: #7aa2f7;
+    --accent-contrast: #000000;
+    --bg: #0e1116;
+    --surface: #171b22;
+    --surface-sunken: #12161c;
+    --text: #e7eaf0;
+    --muted: #a4adbb;
+    --border: #2d3440;
+    --border-strong: #4a5363;
+    --link: #9cc2ff;
+    --focus: #ffd166;
+    --danger: #ff8a7a;
+    --danger-bg: #3a1c1a;
+    --success: #6fd49b;
+    --success-bg: #173526;
+    --notice-bg: #1c2532;
+    --selected-bg: color-mix(in srgb, var(--accent) 14%, var(--surface));
+    --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 8px 28px rgb(0 0 0 / 30%);
+  }
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -32,103 +81,338 @@ body {
   min-height: 100vh;
   background: var(--bg);
   color: var(--text);
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  font-size: 1.0625rem;
+  font-family: var(--font);
+  font-size: var(--step-0);
   line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* --- Page ---------------------------------------------------------------- */
+
 .masthead {
-  max-width: 42rem;
+  max-width: 40rem;
   margin: 0 auto;
-  padding: 1.5rem 1rem 0;
+  padding: var(--space-6) var(--space-4) 0;
 }
 
 .logo {
   display: block;
-  max-height: 3.5rem;
+  max-height: 3rem;
   max-width: 12rem;
   width: auto;
   height: auto;
 }
 
+@media (prefers-color-scheme: dark) {
+  /* Logos are usually drawn for light backgrounds: give them a light plate. */
+  .logo { padding: 0.375rem 0.625rem; border-radius: var(--radius-sm); background: #f4f5f7; }
+}
+
 main {
-  max-width: 42rem;
-  margin: 1.25rem auto 3rem;
-  padding: 1.75rem 1.5rem 2rem;
+  max-width: 40rem;
+  margin: var(--space-5) auto var(--space-7);
+  padding: var(--space-6);
   background: var(--surface);
-  border-top: 0.375rem solid var(--accent);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: 0 1px 2px rgb(16 24 40 / 6%), 0 8px 24px rgb(16 24 40 / 8%);
+  box-shadow: var(--shadow);
 }
 
-@media (max-width: 44rem) {
-  main { margin: 0.75rem 0.5rem 2rem; padding: 1.25rem 1rem 1.5rem; }
+@media (max-width: 42rem) {
+  .masthead { padding: var(--space-5) var(--space-4) 0; }
+  main {
+    margin: var(--space-3) var(--space-3) var(--space-6);
+    padding: var(--space-5) var(--space-4);
+  }
 }
 
-h1 { margin: 0 0 0.75rem; font-size: 1.75rem; line-height: 1.25; }
-h2 { margin: 1.5rem 0 0.5rem; font-size: 1.25rem; }
+h1 {
+  margin: 0;
+  font-size: var(--step-3);
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+h2 { margin: var(--space-5) 0 var(--space-3); font-size: var(--step-2); line-height: 1.3; }
 
 a { color: var(--link); text-underline-offset: 0.15em; }
 a:hover { text-decoration-thickness: 2px; }
 
-.description { margin: 0 0 1.25rem; }
+/* --- Header: title, status pill, deadline -------------------------------- */
+
+.ballot-header { margin-bottom: var(--space-5); }
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-2);
+  margin-top: var(--space-3);
+  color: var(--muted);
+  font-size: var(--step--1);
+}
+.meta p { margin: 0; }
+/* The status pill and the deadline share a row; what the voter can still
+ * do goes on its own line below. */
+.meta .submission-mode, .meta .recorded { flex-basis: 100%; }
+.deadline time { color: var(--text); font-weight: 600; }
+.meta .vota-countdown:not(:empty)::before {
+  content: "·";
+  margin: 0 var(--space-2);
+  color: var(--border-strong);
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.125rem 0.625rem 0.125rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-sunken);
+  color: var(--text);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.6;
+}
+.status::before {
+  content: "";
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--success);
+}
+.status[data-state="answered"]::before { background: var(--accent); }
+.status[data-state="closed"]::before { background: var(--muted); }
+
+.description { margin: 0 0 var(--space-5); color: var(--text); }
 .description > :first-child { margin-top: 0; }
 .description > :last-child { margin-bottom: 0; }
 
-.status, .deadline, .submission-mode { color: var(--muted); margin: 0.25rem 0; }
-.status { font-size: 0.9375rem; }
+/* --- Notices ----------------------------------------------------------------- */
 
 .message, .warning {
-  margin: 1rem 0;
-  padding: 0.75rem 1rem;
-  border-left: 0.3rem solid var(--danger);
-  border-radius: 0.375rem;
+  margin: 0 0 var(--space-5);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  border-left: 0.25rem solid var(--danger);
+  border-radius: var(--radius-sm);
   background: var(--danger-bg);
   color: var(--text);
 }
 
-.recorded, .closed, .fallback {
-  margin: 1rem 0 0.5rem;
-  padding: 0.75rem 1rem;
-  border-radius: 0.375rem;
-  background: var(--notice-bg);
-  border-left: 0.3rem solid var(--accent);
+.fallback {
+  margin: 0 0 var(--space-3);
+  color: var(--muted);
+  font-size: var(--step--1);
 }
 
-.selection, .fallback-options { margin: 0.5rem 0 1rem; padding-left: 1.5rem; }
-.selection li, .fallback-options li { margin: 0.2rem 0; font-weight: 600; }
+.fallback-badge {
+  display: inline-block;
+  flex: none;
+  padding: 0 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-sunken);
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.6;
+  vertical-align: 0.0625rem;
+}
 
-fieldset { border: 0; padding: 0; margin: 1.25rem 0; min-width: 0; }
-legend { padding: 0; margin-bottom: 0.5rem; font-weight: 600; }
+/* --- The outcome: "You chose [chips]" ---------------------------------- */
+
+.outcome {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  margin: 0 0 var(--space-4);
+  padding: var(--space-4);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+}
+.outcome p { margin: 0; color: var(--muted); }
+
+.selection {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.selection li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.75rem 0.25rem 0.625rem;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--selected-bg);
+  color: var(--text);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.selection li::before { content: "✓"; color: var(--text); font-size: 0.8125rem; }
+.fallback-applied li { border-color: var(--border-strong); background: var(--surface); }
+
+/* --- The form: Options as cards ---------------------------------------------- */
+
+fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+legend {
+  padding: 0;
+  margin-bottom: var(--space-3);
+  font-size: var(--step--1);
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.01em;
+}
+
+.options { display: grid; gap: var(--space-2); }
 
 .option {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  margin: 0.5rem 0;
-  padding: 0.75rem 1rem;
+  gap: var(--space-3);
+  min-height: 3.5rem;
+  padding: var(--space-3) var(--space-4);
   border: 1px solid var(--border);
-  border-radius: 0.5rem;
+  border-radius: var(--radius-sm);
   background: var(--surface);
 }
-.option:hover { border-color: var(--muted); }
-.option:has(input:checked) { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
-.option input { flex: none; width: 1.25rem; height: 1.25rem; margin: 0; accent-color: var(--accent); }
-.option label { flex: 1; cursor: pointer; overflow-wrap: anywhere; }
+.option:hover { border-color: var(--border-strong); }
+.option:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--selected-bg);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.option:has(input:focus-visible) {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+.option input {
+  flex: none;
+  width: 1.375rem;
+  height: 1.375rem;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.option input:focus-visible { outline: none; }
+.option label {
+  flex: 1;
+  cursor: pointer;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+/* The whole card is the label's click target. */
+.option label::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+.option:has(input:disabled) { opacity: 0.6; }
+.option:has(input:disabled) label { cursor: default; }
+
+/* Save states (set by the script on an Editable Ballot). */
+.options .option[data-vota-save="failed"] {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+  box-shadow: inset 0 0 0 1px var(--danger);
+  outline: none;
+}
+.options .option[data-vota-save="failed"]:has(input:focus-visible) { outline: 3px solid var(--focus); }
+
+/* --- Actions ------------------------------------------------------------------ */
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3) var(--space-4);
+  margin-top: var(--space-5);
+}
+
+.submission-mode.final {
+  display: flex;
+  flex-basis: 100%;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--text);
+  font-size: var(--step--1);
+  font-weight: 500;
+}
+.submission-mode.final::before {
+  content: "!";
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 1.125rem;
+  height: 1.125rem;
+  border-radius: 50%;
+  background: var(--text);
+  color: var(--surface);
+  font-size: 0.75rem;
+  font-weight: 700;
+  transform: translateY(0.125rem);
+}
+
+.vota-autosave { flex: 1 1 100%; }
 
 button {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-height: 2.75rem;
   padding: 0.625rem 1.5rem;
-  border: 0;
-  border-radius: 0.5rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
   background: var(--accent);
   color: var(--accent-contrast);
   font: inherit;
   font-weight: 600;
   cursor: pointer;
 }
-button:hover { filter: brightness(0.92); }
+button:hover { filter: brightness(0.94); }
+button.vota-secondary {
+  border-color: var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+}
+button.vota-secondary:hover { filter: none; background: var(--surface-sunken); }
+
+.back { color: var(--link); font-weight: 500; }
+
+/* The status line lines up with the cards until it has something to say. */
+.vota-autosave:is([data-state="idle"], [data-state="pending"], [data-state="saved"]) {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+@media (max-width: 30rem) {
+  .actions > button { flex: 1 1 100%; }
+  .confirmation .back { flex: 1 1 100%; text-align: center; }
+}
 
 :focus-visible {
   outline: 3px solid var(--focus);
@@ -137,12 +421,14 @@ button:hover { filter: brightness(0.92); }
 button:focus-visible { box-shadow: 0 0 0 2px var(--surface); }
 
 @media (prefers-reduced-motion: no-preference) {
-  .option, button { transition: border-color 120ms ease, filter 120ms ease; }
+  .option, button { transition: border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease, filter 120ms ease; }
 }
 
 @media (forced-colors: active) {
   main { border: 1px solid CanvasText; }
   button { border: 1px solid ButtonText; }
+  .option:has(input:checked) { outline: 2px solid Highlight; }
+  .status, .fallback-badge, .selection li { border: 1px solid CanvasText; }
 }
 
 @media print {

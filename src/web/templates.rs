@@ -42,7 +42,8 @@
 //! - `message`: a notice for the voter (why a submission was refused or
 //!   invalid), or none;
 //! - `deadline_utc` (RFC 3339) and `deadline_local` (formatted in the
-//!   configured time zone); `status`: the Ballot Status as words;
+//!   configured time zone, short: `Tue 1 Dec 2026, 13:00 CET`); `status`:
+//!   the Ballot Status as words;
 //! - `revision`: the Ballot's revision (an integer). Templates don't need
 //!   it: the app inserts the hidden field itself (see below).
 //!
@@ -83,22 +84,26 @@
 //! # The voting page's script
 //!
 //! Templates don't include the voting page's script: the app inserts it
-//! (with its stylesheet) into every rendered `ballot.html` page itself, right
-//! before the first `</head>` (without one, before `</body>`), so a Theme
-//! can't drop it. A Theme must not add inline scripts or event-handler
+//! (`<script type="module" id="vota-enhancement">`, with its stylesheet) into
+//! every rendered `ballot.html` page itself, right before the first
+//! `</head>` (without one, before `</body>`), so a Theme can't drop it. A Theme must not add inline scripts or event-handler
 //! attributes (the Content Security Policy blocks them). The script relies
 //! only on what the no-JS page needs anyway: in `ballot.html`, the voting
 //! form (`method="post"`, with radio or checkbox inputs named `option`, each
 //! with a `<label for>`) and the deadline as `<time datetime="{{ deadline_utc
-//! }}">`, which it rewrites into the voter's local time zone and puts the
-//! countdown beside. It saves in place by swapping in the server's fresh
+//! }}">`, which it rewrites into the voter's local time zone. It fills a
+//! countdown placeholder (an element with the class `vota-countdown`) if
+//! the template has one, and marks the save state of an Option's card (the
+//! input's closest `.option`, else its parent) on an Editable Ballot, which
+//! it autosaves. It saves in place by swapping in the server's fresh
 //! `<body>`, so a page's `<body>` should hold everything that changes with
-//! the Ballot Status. Its dialog and countdown are styled by
-//! `<base_path>assets/app/ballot.css` with the custom properties `--accent`,
-//! `--surface`, `--bg`, `--text`, `--border`, `--danger` and `--radius`
-//! (each optional; its buttons are the Theme's own `button`s), on
-//! zero-specificity selectors (`.vota-dialog`, `.vota-countdown`, …) that a
-//! Theme's stylesheet can override.
+//! the Ballot Status. Its dialog, status line and countdown are styled by
+//! `<base_path>assets/app/ballot.css` with the Themes' custom properties
+//! (`--accent`, `--surface`, `--text`, `--muted`, `--border`, `--danger`,
+//! `--success`, …, each optional; its buttons are the Theme's own
+//! `button`s), on zero-specificity selectors (`.vota-dialog`,
+//! `.vota-autosave`, `[data-vota-save]`, …) that a Theme's stylesheet can
+//! override.
 //! The confirmation page (`confirm.html`) gets no script: with JavaScript
 //! the confirmation is a dialog on the voting page instead.
 

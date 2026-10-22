@@ -23,6 +23,7 @@ async fn voter_api_returns_the_ballot_by_its_token() {
             "description": null,
             "options": created["options"],
             "choice_mode": "single",
+            "allow_no_option": false,
             "submission_mode": "final",
             "voting_deadline": "2030-01-22T12:00:00Z",
             "voting_open": true,

@@ -349,6 +349,35 @@ where
     }
 }
 
+/// The version and file segments of an app module path
+/// (`/assets/app/{version}/{file}`), still untrusted. Like
+/// [`AssetNamePath`], they must be literal in the raw request path: any
+/// percent-encoding or an undecodable segment is a plain 404.
+pub struct AppModulePath {
+    pub version: UntrustedValue<String>,
+    pub file: UntrustedValue<String>,
+}
+
+impl<St> FromRequestParts<St> for AppModulePath
+where
+    St: Send + Sync,
+{
+    type Rejection = StatusCode;
+
+    async fn from_request_parts(parts: &mut Parts, state: &St) -> Result<Self, Self::Rejection> {
+        if raw_path(parts).contains('%') {
+            return Err(StatusCode::NOT_FOUND);
+        }
+        let Path((version, file)) = Path::<(String, String)>::from_request_parts(parts, state)
+            .await
+            .map_err(|_| StatusCode::NOT_FOUND)?;
+        Ok(Self {
+            version: UntrustedValue::wrap(version),
+            file: UntrustedValue::wrap(file),
+        })
+    }
+}
+
 /// The raw query string of an app asset request (`?v=<version>`), still
 /// untrusted; empty without one. Never rejects: any query still gets the
 /// asset.

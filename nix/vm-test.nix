@@ -8,6 +8,9 @@ let
   migrations = lib.length (
     lib.filter (lib.hasSuffix ".sql") (lib.attrNames (builtins.readDir ../migrations))
   );
+  # A pre-provisioned Admin Token (as `vota admin-token generate` prints
+  # it), in a root-owned 0400 file outside the store, like an agenix secret.
+  fileToken = "vta_q2bKIu0bSWsRCnMyOt3nfdk9hTaZpjk7Xx9bt7v1uvY";
   logos = pkgs.writeTextDir "acme.svg" ''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="#c00"/></svg>'';
 in
 pkgs.testers.runNixOSTest {
@@ -19,14 +22,23 @@ pkgs.testers.runNixOSTest {
   nodes.machine = {
     imports = [ self.nixosModules.default ];
 
+    # The service's default_time_zone follows it (not set below).
+    time.timeZone = "Europe/Berlin";
+
+    # A copy (with a mode), not a symlink into the store.
+    environment.etc."vota-admin-token" = {
+      text = "${fileToken}\n";
+      mode = "0400";
+    };
+
     services.vota = {
       enable = true;
+      adminTokenFiles = [ "/etc/vota-admin-token" ];
       # Short, so the test sees a restart soon.
       healthCheck.interval = "5s";
       settings = {
         # Under a sub-path, as behind a shared reverse proxy.
         public_base_url = "http://localhost:8080/polls/";
-        default_time_zone = "Europe/Berlin";
         trusted_proxies = [
           "127.0.0.1/32"
           "::1/128"
@@ -118,12 +130,43 @@ pkgs.testers.runNixOSTest {
         listed = json.loads(machine.succeed(f"{client} list --group vm-client --json"))
         assert [(b["url"], b["voter_reference"]) for b in listed["ballots"]] == [(url, "alice")], listed
         print(machine.succeed(f"{client} list --group vm-client"))
+        # Allow No Option: a Response of no Option shows as "(none)", not "-".
+        none_url = machine.succeed(
+            f"{client} create --title 'Any of these?' --option A --option B "
+            f"--choice-mode multiple --allow-no-option --voting-deadline {deadline} --group vm-none"
+        ).strip()
+        none_token = none_url.rsplit("/", 1)[1]
+        machine.succeed(
+            f"curl -sf -X PUT http://localhost:8080/polls/api/b/{none_token}/response "
+            "-H 'Content-Type: application/json' -d '{\"option_ids\": [], \"revision\": 0}'"
+        )
+        none_list = machine.succeed(f"{client} list --group vm-none")
+        assert none_list.splitlines()[1].endswith("  (none)"), none_list
         assert token not in journal()
         # Without a token: a usage error, before any request.
         status = machine.execute("VOTA_URL=http://localhost:8080/polls vota ballot list")[0]
         assert status == 2, status
         # The shell completions are installed with the package.
         machine.succeed("grep -q 'vota' /run/current-system/sw/share/bash-completion/completions/vota.bash")
+
+    with subtest("default_time_zone follows time.timeZone: a local deadline is read in Berlin time"):
+        # A week ahead, in the system's (and so the service's) zone, without offset.
+        local = machine.succeed("date -d '+7 days' +%Y-%m-%dT%H:%M").strip()
+        # The same instant in UTC: GNU date reads the local time in the system
+        # zone (to seconds since the epoch), then prints that instant in UTC.
+        # (`date -u -d <local>` would read the input as UTC too.)
+        epoch = machine.succeed(f"date -d '{local.replace('T', ' ')}' +%s").strip()
+        expected = machine.succeed(f"date -u -d @{epoch} +%Y-%m-%dT%H:%M:00Z").strip()
+        offset = machine.succeed("date +%z").strip()
+        assert offset in ["+0100", "+0200"], offset
+        machine.succeed(
+            f"{client} create --title 'Local deadline' --option A --option B "
+            f"--voting-deadline {local} --group vm-local"
+        )
+        listed = json.loads(machine.succeed(f"{client} list --group vm-local --json"))
+        deadlines = [b["voting_deadline"] for b in listed["ballots"]]
+        assert deadlines == [expected], (local, deadlines)
+        assert local[:16] != expected[:16], (local, expected)
 
     with subtest("the CLI wrapper lists and revokes Admin Tokens"):
         # The commands of the deployment guide; their output is printed for it.
@@ -221,6 +264,21 @@ pkgs.testers.runNixOSTest {
         assert "vta_wrong" not in log
         # Other clients are not affected.
         create_ballot(token)
+
+    with subtest("an Admin Token from adminTokenFiles works for vota ballot, a bogus one gets 401"):
+        # After the graceful-stop check: the bogus token logs a warning.
+        machine.succeed("test \"$(stat -c '%U %a' /etc/vota-admin-token)\" = 'root 400'")
+        files_client = "VOTA_URL=http://localhost:8080/polls vota ballot"
+        machine.succeed(f"VOTA_ADMIN_TOKEN=${fileToken} {files_client} list --group vm-client")
+        bogus = "vta_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        status, output = machine.execute(f"VOTA_ADMIN_TOKEN={bogus} {files_client} list 2>&1")
+        assert status != 0 and "401" in output, (status, output)
+        log = journal()
+        assert "token_id=file:1 method=GET route=/polls/admin/ballots status=200" in log, log
+        assert "${fileToken}" not in log
+        # Not a database token: the wrapper doesn't list it.
+        listed = json.loads(machine.succeed("vota-admin-token list --json"))
+        assert [t["label"] for t in listed] == ["vm-test"], listed
 
     def main_pid():
         return machine.succeed("systemctl show -p MainPID --value vota").strip()

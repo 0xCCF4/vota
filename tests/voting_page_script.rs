@@ -1,7 +1,8 @@
-//! The voting page's JavaScript enhancement: one self-hosted script (and its
-//! stylesheet), served from a fixed asset route and included on every voting
-//! page state by the app itself, so a Theme's templates can't drop it. What
-//! the script needs comes in `data-*` attributes on its own `<script>` tag;
+//! The voting page's JavaScript enhancement: self-hosted ES modules (and
+//! their stylesheet), served under one content-versioned directory and
+//! included on every voting page state by the app itself, so a Theme's
+//! templates can't drop it. What the script needs comes in `data-*`
+//! attributes on its own `<script type="module" id="vota-enhancement">` tag;
 //! there is never inline script.
 
 #![cfg(feature = "server")]
@@ -15,25 +16,68 @@ use http_body_util::BodyExt;
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
 
-const SCRIPT: &str = "/assets/app/ballot.js";
 const STYLESHEET: &str = "/assets/app/ballot.css";
+/// The modules' directory; the version follows as the next path segment.
+const MODULES: &str = "/assets/app/";
+/// The script's modules: the entry point first.
+const MODULE_FILES: [&str; 8] = [
+    "main.js",
+    "config.js",
+    "dom.js",
+    "time.js",
+    "api.js",
+    "dialog.js",
+    "autosave.js",
+    "refresh.js",
+];
 
 #[tokio::test]
-async fn the_script_is_served_from_our_own_host_with_safe_headers() {
+async fn the_scripts_modules_are_served_from_our_own_host_with_safe_headers() {
     let app = TestApp::new().await;
+    let version = modules_version(&app).await;
 
-    let response = app.get(SCRIPT).await;
+    for file in MODULE_FILES {
+        let path = format!("{MODULES}{version}/{file}");
+        let response = app.get(&path).await;
 
-    assert_eq!(response.status(), StatusCode::OK);
-    let headers = response.headers();
-    assert_eq!(
-        headers[header::CONTENT_TYPE],
-        "text/javascript; charset=utf-8"
-    );
-    assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
-    assert_eq!(headers[header::CACHE_CONTROL], "public, max-age=3600");
-    let body = body_string(response).await;
-    assert!(body.contains("fetch("), "{body}");
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        let headers = response.headers();
+        assert_eq!(
+            headers[header::CONTENT_TYPE],
+            "text/javascript; charset=utf-8",
+            "{path}"
+        );
+        assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        let body = body_string(response).await;
+        // Plain ES modules importing only their siblings, relatively.
+        for line in body.lines().filter(|line| line.starts_with("import ")) {
+            assert!(line.contains(r#" from "./"#), "{path}: {line}");
+        }
+    }
+    let api = body_string(app.get(&format!("{MODULES}{version}/api.js")).await).await;
+    assert!(api.contains("fetch("), "{api}");
+}
+
+#[tokio::test]
+async fn an_unknown_module_is_not_found() {
+    let app = TestApp::new().await;
+    let version = modules_version(&app).await;
+
+    for path in [
+        format!("{MODULES}{version}/nope.js"),
+        format!("{MODULES}{version}/main.js/"),
+        format!("{MODULES}{version}/MAIN.JS"),
+        format!("{MODULES}{version}/%6Dain.js"),
+        format!("{MODULES}{version}/../ballot.css"),
+        format!("{MODULES}{version}/"),
+        "/assets/app/ballot.js".to_owned(),
+    ] {
+        assert_eq!(
+            app.get(&path).await.status(),
+            StatusCode::NOT_FOUND,
+            "{path}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -70,10 +114,38 @@ async fn a_throttled_client_still_gets_the_script_and_its_stylesheet() {
         .await;
     assert_eq!(blocked.status(), StatusCode::TOO_MANY_REQUESTS);
 
-    for path in [SCRIPT, STYLESHEET] {
-        let response = app.get_from("192.0.2.9", None, path).await;
+    let version = modules_version(&app).await;
+    for path in [format!("{MODULES}{version}/main.js"), STYLESHEET.to_owned()] {
+        let response = app.get_from("192.0.2.9", None, &path).await;
         assert_eq!(response.status(), StatusCode::OK, "{path}");
     }
+}
+
+/// Whether `version` is 16 lowercase hex digits.
+fn is_version(version: &str) -> bool {
+    version.len() == 16
+        && version
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// The modules' version the voting page loads them under: the path segment
+/// in `/assets/app/<version>/main.js`.
+async fn modules_version(app: &TestApp) -> String {
+    let (token, _) = app.create_ballot_with_modes("single", "final").await;
+    let html = body_string(app.get(&format!("/b/{token}")).await).await;
+    let start = html
+        .find(&format!(r#"<script type="module" src="{MODULES}"#))
+        .unwrap_or_else(|| panic!("no module script in {html}"))
+        + r#"<script type="module" src=""#.len()
+        + MODULES.len();
+    let version = &html[start..start + html[start..].find('/').unwrap()];
+    assert!(is_version(version), "{version}");
+    assert!(
+        html[start + version.len()..].starts_with("/main.js\""),
+        "{html}"
+    );
+    version.to_owned()
 }
 
 /// The URL the voting page loads the asset at `path` from: `path?v=` and
@@ -86,22 +158,85 @@ async fn versioned_url(app: &TestApp, path: &str) -> String {
         .unwrap_or_else(|| panic!("no versioned {path} in {html}"))
         + 1;
     let url = &html[start..start + html[start..].find('"').unwrap()];
-    let version = &url[path.len() + 3..];
-    assert_eq!(version.len(), 16, "{url}");
-    assert!(
-        version
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
-        "{url}"
-    );
+    assert!(is_version(&url[path.len() + 3..]), "{url}");
     url.to_owned()
 }
 
 #[tokio::test]
-async fn the_script_and_its_stylesheet_are_cached_for_good_under_their_versioned_urls() {
+async fn the_modules_are_cached_for_good_under_their_versioned_directory() {
+    let app = TestApp::new().await;
+    let version = modules_version(&app).await;
+
+    let mut all = Vec::new();
+    for file in MODULE_FILES {
+        let path = format!("{MODULES}{version}/{file}");
+        let response = app.get(&path).await;
+
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "public, max-age=31536000, immutable",
+            "{path}"
+        );
+        all.push((file, body_string(response).await));
+    }
+    // The version is the content's: the start of the SHA-256 over every
+    // module (sorted by name), each as its name, a NUL, its content, a NUL.
+    all.sort();
+    let mut hasher = Sha256::new();
+    for (file, body) in &all {
+        hasher.update(file.as_bytes());
+        hasher.update([0]);
+        hasher.update(body.as_bytes());
+        hasher.update([0]);
+    }
+    let hex: String = hasher.finalize()[..8]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(version, hex);
+}
+
+#[tokio::test]
+async fn an_old_or_odd_modules_version_still_gets_the_current_modules_cached_briefly() {
+    let app = TestApp::new().await;
+    let version = modules_version(&app).await;
+
+    for file in MODULE_FILES {
+        let current = body_string(app.get(&format!("{MODULES}{version}/{file}")).await).await;
+        for odd in [
+            "0000000000000000".to_owned(),
+            version.to_uppercase(),
+            format!("{version}x"),
+            "v".to_owned(),
+        ] {
+            let path = format!("{MODULES}{odd}/{file}");
+            let response = app.get(&path).await;
+
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert_eq!(
+                response.headers()[header::CACHE_CONTROL],
+                "public, max-age=3600",
+                "{path}"
+            );
+            assert_eq!(body_string(response).await, current, "{path}");
+        }
+        // A query string changes nothing: the version is in the path.
+        let path = format!("{MODULES}{version}/{file}?v=0");
+        let response = app.get(&path).await;
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "public, max-age=31536000, immutable",
+            "{path}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_stylesheet_is_cached_for_good_under_its_versioned_url() {
     let app = TestApp::new().await;
 
-    for path in [SCRIPT, STYLESHEET] {
+    for path in [STYLESHEET] {
         let url = versioned_url(&app, path).await;
         let response = app.get(&url).await;
 
@@ -122,10 +257,10 @@ async fn the_script_and_its_stylesheet_are_cached_for_good_under_their_versioned
 }
 
 #[tokio::test]
-async fn an_old_or_odd_version_still_gets_the_current_asset_cached_briefly() {
+async fn an_old_or_odd_version_still_gets_the_current_stylesheet_cached_briefly() {
     let app = TestApp::new().await;
 
-    for path in [SCRIPT, STYLESHEET] {
+    for path in [STYLESHEET] {
         let current = versioned_url(&app, path).await;
         let version = &current[path.len() + 3..];
         let current_body = body_string(app.get(&current).await).await;
@@ -152,7 +287,8 @@ async fn an_old_or_odd_version_still_gets_the_current_asset_cached_briefly() {
 }
 
 /// The voting page of the Ballot with this token, as HTML, with the app
-/// assets' versions (`?v=` and 16 characters) left out.
+/// assets' versions (`?v=` and 16 characters, or the modules' directory
+/// segment) left out.
 async fn page(app: &TestApp, token: &str) -> String {
     let response = app.get(&format!("/b/{token}")).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -162,11 +298,14 @@ async fn page(app: &TestApp, token: &str) -> String {
 /// `html` without the versions of the app assets' URLs.
 fn unversioned(html: &str) -> String {
     let mut out = html.to_owned();
-    for path in [SCRIPT, STYLESHEET] {
-        let versioned = format!("{path}?v=");
-        if let Some(at) = out.find(&versioned) {
-            out.replace_range(at + path.len()..at + versioned.len() + 16, "");
-        }
+    let versioned = format!("{STYLESHEET}?v=");
+    if let Some(at) = out.find(&versioned) {
+        out.replace_range(at + STYLESHEET.len()..at + versioned.len() + 16, "");
+    }
+    let module = format!(r#"src="{MODULES}"#);
+    if let Some(at) = out.find(&module) {
+        let start = at + module.len();
+        out.replace_range(start..start + 17, "");
     }
     out
 }
@@ -180,7 +319,7 @@ async fn the_voting_page_loads_the_script_with_what_it_needs_in_data_attributes(
 
     let expected = format!(
         r#"<link rel="stylesheet" href="/assets/app/ballot.css">
-<script src="/assets/app/ballot.js" defer data-api="/api/b/{token}/response" data-page="/b/{token}" data-deadline="2030-01-22T12:00:00Z" data-now="2030-01-15T12:00:00Z" data-open="true" data-revision="0" data-choice-mode="single" data-submission-mode="final" data-needs-confirmation="true"></script>
+<script type="module" src="/assets/app/main.js" id="vota-enhancement" data-api="/api/b/{token}/response" data-page="/b/{token}" data-deadline="2030-01-22T12:00:00Z" data-now="2030-01-15T12:00:00Z" data-open="true" data-revision="0" data-choice-mode="single" data-submission-mode="final" data-needs-confirmation="true" data-allow-no-option="false" data-answered="false"></script>
 </head>"#
     );
     assert!(html.contains(&expected), "{expected}\nnot in\n{html}");
@@ -189,7 +328,7 @@ async fn the_voting_page_loads_the_script_with_what_it_needs_in_data_attributes(
 /// The `<script …>` start tag of the voting page's script in `html`.
 fn script_tag(html: &str) -> &str {
     let start = html
-        .find(r#"<script src="/assets/app/ballot.js""#)
+        .find(r#"<script type="module" src="/assets/app/main.js""#)
         .unwrap_or_else(|| panic!("no script in {html}"));
     let end = start + html[start..].find('>').unwrap();
     &html[start..=end]
@@ -206,6 +345,38 @@ async fn the_data_attributes_follow_the_ballots_modes() {
     assert!(tag.contains(r#" data-choice-mode="multiple""#), "{tag}");
     assert!(tag.contains(r#" data-submission-mode="editable""#), "{tag}");
     assert!(tag.contains(r#" data-needs-confirmation="false""#), "{tag}");
+    assert!(tag.contains(r#" data-allow-no-option="false""#), "{tag}");
+}
+
+#[tokio::test]
+async fn the_script_is_told_whether_the_ballot_allows_no_option_and_has_a_response() {
+    let app = TestApp::new().await;
+    let mut request = ballot_request();
+    request["choice_mode"] = "multiple".into();
+    request["submission_mode"] = "editable".into();
+    request["allow_no_option"] = true.into();
+    let token = app.create_ballot(&request).await["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let html = page(&app, &token).await;
+    let tag = script_tag(&html);
+    assert!(tag.contains(r#" data-allow-no-option="true""#), "{tag}");
+    assert!(tag.contains(r#" data-answered="false""#), "{tag}");
+
+    let saved = app
+        .put_json(
+            &format!("/api/b/{token}/response"),
+            &json!({ "option_ids": [] }),
+        )
+        .await;
+    assert_eq!(saved.status(), StatusCode::OK);
+    let html = page(&app, &token).await;
+    assert!(
+        script_tag(&html).contains(r#" data-answered="true""#),
+        "{html}"
+    );
 }
 
 #[tokio::test]
@@ -227,7 +398,8 @@ async fn once_the_deadline_has_passed_the_script_is_told_voting_is_closed() {
 fn assert_script_included_and_csp_compatible(html: &str, state: &str) {
     assert_eq!(html.matches("<script").count(), 1, "{state}: {html}");
     let tag = script_tag(html);
-    assert!(tag.contains(" defer "), "{state}: {tag}");
+    // A module: deferred by default, from our own host.
+    assert!(tag.contains(r#" id="vota-enhancement" "#), "{state}: {tag}");
     assert_eq!(
         html.matches(r#"<link rel="stylesheet" href="/assets/app/ballot.css">"#)
             .count(),
@@ -291,7 +463,7 @@ async fn every_voting_page_state_includes_the_script() {
     assert_script_included_and_csp_compatible(&page(&app, token).await, "closed");
     let auto_fallback = page(&app, unanswered["token"].as_str().unwrap()).await;
     assert!(
-        auto_fallback.contains("Fallback applied"),
+        auto_fallback.contains("No answer was given, so this was recorded:"),
         "{auto_fallback}"
     );
     assert_script_included_and_csp_compatible(&auto_fallback, "auto-fallback");

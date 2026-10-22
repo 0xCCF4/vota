@@ -21,7 +21,8 @@ macro_rules! select_ballots {
     };
     ($condition:literal, $rest:literal) => {
         concat!(
-            "SELECT id, token, title, description, choice_mode, submission_mode, voting_deadline,
+            "SELECT id, token, title, description, choice_mode, allow_no_option, submission_mode,
+                    voting_deadline,
                     purge_date, created_at, group_name, voter_reference, revision,
                     theme, accent_color, logo
              FROM ballots WHERE purge_date > ?1 AND (",

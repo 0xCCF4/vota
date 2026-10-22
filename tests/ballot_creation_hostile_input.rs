@@ -170,10 +170,16 @@ async fn malformed_options_are_rejected_naming_the_option() {
 // --- voting_deadline -----------------------------------------------------
 
 #[tokio::test]
-async fn voting_deadline_must_be_rfc3339_with_an_explicit_offset() {
+async fn voting_deadline_must_be_rfc3339_or_an_exact_local_date_time() {
     let app = TestApp::new().await;
     for value in [
-        json!("2030-01-22T12:00:00"),
+        // Local date-times (no offset) are accepted, but only exactly.
+        json!("2030-01-22T12"),
+        json!("2030-01-22T12:00:00 "),
+        json!("2030-01-22t12:00:00"),
+        json!("2030-01-22T12:00\u{200B}"),
+        json!("２０３０-01-22T12:00"),
+        json!("2030-01-22T12:00:00.1234567890"),
         json!("2030-01-22 12:00"),
         json!("2030-01-22"),
         json!("22.01.2030 12:00"),
@@ -215,10 +221,12 @@ async fn voting_deadline_must_lie_in_the_future() {
 // --- purge_date ----------------------------------------------------------
 
 #[tokio::test]
-async fn purge_date_must_be_rfc3339_with_an_explicit_offset() {
+async fn purge_date_must_be_rfc3339_or_an_exact_local_date_time() {
     let app = TestApp::new().await;
     for value in [
-        json!("2030-03-01T12:00:00"),
+        json!("2030-03-01T12"),
+        json!("2030-03-01T12:00:00\u{202E}"),
+        json!("2030-03-01 12:00"),
         json!("2030-03-01"),
         json!("2030-02-30T12:00:00Z"),
         json!("2030-03-01T25:00:00Z"),

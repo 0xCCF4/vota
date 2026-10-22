@@ -7,6 +7,7 @@ vota [--config <FILE>] [serve]
 vota [--config <FILE>] admin-token create [--label <LABEL>] [--expires-in <DURATION> | --expires-at <RFC3339>]
 vota [--config <FILE>] admin-token list [--json]
 vota [--config <FILE>] admin-token revoke (<ID> | --label <LABEL>)
+vota admin-token generate
 vota ballot <create|get|list|edit|extend|delete> [<connection flags>] [--json] …
 vota completions <bash|zsh|fish>
 vota --help | --version
@@ -30,7 +31,7 @@ Which commands a `vota` binary has depends on the cargo features it was built wi
 | Server only | `cargo build --release --no-default-features --features server` | `serve`, `admin-token`, `completions` |
 | Neither | `cargo build --release --no-default-features` | `completions` |
 
-`admin-token` belongs to `server`: it works directly on the server's database (it needs the configuration, SQLite and the database migrations), so it runs on the server's host anyway. A client-only build manages Ballots through the admin API with a token created there.
+`admin-token` belongs to `server`: it works directly on the server's database (it needs the configuration, SQLite and the database migrations), so it runs on the server's host anyway. A client-only build manages Ballots through the admin API with a token created there. [`admin-token generate`](#admin-token-generate) needs no database, but stays with the other `admin-token` commands in `server`; where only a client build is at hand, its [shell one-liner](#admin-token-generate) makes the same token.
 
 Without `server` there is no default command: `vota` alone prints the help (exit 2) instead of starting a server. The flake has the full build as `packages.default` (and `vota`) and the client-only build as `packages.vota-client`; `cargo install vota --no-default-features --features client` installs the client from crates.io.
 
@@ -46,7 +47,7 @@ Without `server` there is no default command: `vota` alone prints the help (exit
 
 **Logging** (of the server commands; `ballot` and `completions` log nothing) goes to stderr. Its level is set with the standard `RUST_LOG` variable (default `info`; e.g. `RUST_LOG=debug`, `RUST_LOG=vota=debug,info`). It is coloured only when stderr is a terminal, so a journal or log file gets plain text. stdout carries only command output, such as a new Admin Token. Admin Tokens, Ballot Tokens and Voter References are never logged. `serve` logs every admin request in the [audit log](admin-api.md#audit-log).
 
-**Every server command** (`serve`, `admin-token …`) loads the configuration, opens (and if needed creates) the database and applies pending migrations (except a `create` refused for its label or its expiry, which stops before the database is opened and leaves no trace). Only `serve` also loads the Theme and logo folders. The `admin-token` commands never read them, so a broken Theme or logo stops the server but never token management. An unknown `VOTA_*` environment variable is ignored with a warning on every command; an unknown key in the config file stops every command (see the [configuration reference](configuration.md#environment-variables)).
+**Every server command** (`serve`, `admin-token …`, except `admin-token generate`) loads the configuration, opens (and if needed creates) the database and applies pending migrations (except a `create` refused for its label or its expiry, which stops before the database is opened and leaves no trace). Only `serve` also loads the Theme and logo folders. The `admin-token` commands never read them, so a broken Theme or logo stops the server but never token management. An unknown `VOTA_*` environment variable is ignored with a warning on every command; an unknown key in the config file stops every command (see the [configuration reference](configuration.md#environment-variables)).
 
 **File modes.** Every file the app creates (the database and its `-wal` and `-shm` files) is readable and writable by its own user only (mode `0600`), whatever umask it was started with: the process sets its umask to `077`. Opening a database whose files others could read also resets them to `0600`. If that fails, the command logs a warning naming the file and carries on, e.g. for a database file owned by another user (from the NixOS VM test):
 
@@ -99,7 +100,7 @@ Creates an Admin Token and prints it **once** on stdout. Only its SHA-256 hash i
 | ------------------------- | ------- |
 | `--label <LABEL>`         | Note on what the token is for. Optional. Several tokens may share a label. Single-line text like a Ballot's title: trimmed and NFC-normalised, not empty, at most 200 characters, at most 4 combining marks on one character, without control, bidi or other invisible characters (see [Trust boundary](../concepts/trust-boundary.md#text)), so a label can't steer the terminal of whoever lists the tokens. |
 | `--expires-in <DURATION>` | Lifetime from now, in [humantime](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) syntax: `90days`, `12h`, `1y 6months`, `30m`. |
-| `--expires-at <RFC3339>`  | Expiry as an RFC 3339 timestamp with offset, e.g. `2030-01-01T00:00:00Z`. Must lie in the future. |
+| `--expires-at <RFC3339>`  | Expiry as an RFC 3339 timestamp with offset, e.g. `2030-01-01T00:00:00Z`. Must lie in the future. Unlike the admin API's dates, an offset is required here (`default_time_zone` doesn't apply). |
 
 Either way the expiry must be no later than `9999-12-31T23:59:59Z`, the last instant an RFC 3339 timestamp can show. A longer lifetime (e.g. `--expires-in 300000years`) or a later expiry (e.g. `9999-12-31T23:59:59-01:00`, which is in the year 10000 in UTC) is refused, as is an expiry that doesn't lie in the future and an invalid label. Each is refused before the database is opened, so a missing database file is not created.
 
@@ -255,6 +256,25 @@ error: the following required arguments were not provided:
   <ID|--label <LABEL>>                                            (exit 2)
 ```
 
+Tokens from [`admin_token_files`](configuration.md#admin_token_files) are not in the database, so `revoke` can't reach them: remove the file from the list and restart the server.
+
+## `admin-token generate`
+
+Prints a new Admin Token on stdout, for an [Admin Token file](configuration.md#admin_token_files), and stores it nowhere. It reads no configuration (`--config` and `VOTA_*` are ignored), opens no database, logs nothing and creates no file. Each call prints a fresh token from the operating system's CSPRNG, in the same format as `create`: `vta_` and 43 base64url characters.
+
+```text
+$ vota admin-token generate
+vta_XVrvwXzowx8k2P8D5tlMcVWLWDwuaaqHeiCRMszgqtQ
+```
+
+Write it straight into the secret, e.g. `vota admin-token generate > admin-token` (with `umask 077`), or into an agenix secret (see [Deployment: NixOS](../guides/deployment.md#admin-tokens-from-files-agenix)). On a machine without a full `vota` build, this shell one-liner (OpenSSL and GNU coreutils' `basenc`) prints a token of the same format: 32 random bytes, base64url without the `=` padding.
+
+```sh
+printf 'vta_%s\n' "$(openssl rand 32 | basenc --base64url | tr -d '=\n')"
+```
+
+The token works once a server lists its file in `admin_token_files` and is (re)started. `admin-token list` never shows it.
+
 ## `ballot`
 
 A client for the [admin API](admin-api.md) of a running Vota server: it builds the request from flags, sends it over HTTP(S), and prints the answer. It is a thin client. The server checks every value, and the client only parses what it needs to build the JSON (the values of `--choice-mode`, `--submission-mode` and `--status`, and which flags go together), so its errors are the API's. It needs no config file and no database, so it may run on any machine that reaches the server. It is part of the default build (cargo feature `client`); a client-only build has it without the server (see [Builds and cargo features](#builds-and-cargo-features)).
@@ -264,7 +284,7 @@ vota ballot create (<field flags> | --body <FILE|->)
 vota ballot get <ID>
 vota ballot list [--group <GROUP>] [--status unanswered|answered|auto_fallback]
 vota ballot edit <ID> (<field flags> <--clear-* flags> | --body <FILE|->)
-vota ballot extend <ID> --voting-deadline <RFC3339>
+vota ballot extend <ID> --voting-deadline <DATETIME>
 vota ballot delete <ID> [--yes]
 ```
 
@@ -308,9 +328,10 @@ The examples below ran against `vota serve` with `public_base_url = "http://loca
 | `--description-file <PATH\|->` | `description`, read from a file or stdin. Can't be combined with `--description`. |
 | `--option <LABEL>` | `options`: repeat it for each Option, in display order (`--option Pizza --option Sushi`). On `edit` the given Options **replace all Options**, and each gets a new ID, exactly as in the API. |
 | `--choice-mode single\|multiple` | `choice_mode` |
+| `--allow-no-option[=true\|false]` | `allow_no_option`: [Allow No Option](admin-api.md#request-fields), the voter may answer with no Option (multiple choice only). The flag alone sends `true`; `--allow-no-option=false` sends `false`, which is how `edit` turns it off (the value needs the `=`; anything but `true` or `false` is a usage error). |
 | `--submission-mode final\|editable` | `submission_mode` |
-| `--voting-deadline <RFC3339>` | `voting_deadline`, e.g. `2026-12-01T12:00:00+01:00` |
-| `--purge-date <RFC3339>` | `purge_date` |
+| `--voting-deadline <DATETIME>` | `voting_deadline`: RFC 3339, e.g. `2026-12-01T12:00:00+01:00`, or without an offset (`2026-12-01T12:00`) a local time in the server's [`default_time_zone`](configuration.md#default_time_zone); see [Conventions](admin-api.md#conventions). The client passes it on unchecked. |
+| `--purge-date <DATETIME>` | `purge_date`, in the same forms |
 | `--fallback <LABEL>` | `fallback`: an Option's label; repeat it for more than one. |
 | `--group <GROUP>` | `group` |
 | `--voter-reference <REF>` | `voter_reference` |
@@ -387,6 +408,7 @@ Status:          answered
 Group:           offsite-2027
 Voter Reference: alice@example.org
 Choice Mode:     multiple
+Allow No Option: no
 Submission Mode: editable
 Voting Deadline: 2026-10-27T12:00:00Z
 Purge Date:      2026-11-24T12:00:00Z
@@ -405,12 +427,13 @@ Response:        Thursday 14 January (answered 2026-10-20T08:58:12.767Z, changed
 Result:          Thursday 14 January (from the Response)
 ```
 
-`Result` names its source: `from the Response`, or `from the Fallback` once the Fallback applied (Ballot Status `auto_fallback`).
+`Result` names its source: `from the Response`, or `from the Fallback` once the Fallback applied (Ballot Status `auto_fallback`). A Response of no Option (on a Ballot with Allow No Option) shows as `(none)`, e.g. `Result:          (none) (from the Response)`, while `-` means no Response or no result at all.
 
 ```text
 $ vota ballot get 1 --json
 {
   "accent_color": null,
+  "allow_no_option": false,
   "choice_mode": "single",
   "created_at": "2026-10-20T08:58:12.524Z",
   "description": null,
@@ -459,7 +482,7 @@ ID  STATUS      GROUP         VOTER-REFERENCE    VOTING-DEADLINE       RESULT
 3   unanswered  offsite-2027  bob@example.org    2026-10-27T12:00:00Z  -
 ```
 
-With no Ballot it prints only the header line. With `--json` it prints the API's `{"ballots": [...]}`, e.g. `vota ballot list --group offsite-2027 --status answered --json | jq -r '.ballots[] | [.voter_reference, .result.options[].label] | @tsv'`.
+RESULT is `(none)` for a Response of no Option (Allow No Option), and `-` without a result. With no Ballot it prints only the header line. With `--json` it prints the API's `{"ballots": [...]}`, e.g. `vota ballot list --group offsite-2027 --status answered --json | jq -r '.ballots[] | [.voter_reference, .result.options[].label] | @tsv'`.
 
 ### `ballot edit`
 
@@ -473,6 +496,7 @@ Status:          unanswered
 Group:           lunch
 Voter Reference: -
 Choice Mode:     single
+Allow No Option: no
 Submission Mode: final
 Voting Deadline: 2026-10-27T12:00:00Z
 Purge Date:      2026-11-24T12:00:00Z
@@ -498,7 +522,7 @@ Error: 409 already_answered: this Ballot has a Response; it can no longer be edi
 
 ### `ballot extend`
 
-`POST /admin/ballots/{id}/extend`. `--voting-deadline <RFC3339>` is required and must be later than the current one; an extension reopens a closed Ballot without a Response. Prints the Ballot like `get`:
+`POST /admin/ballots/{id}/extend`. `--voting-deadline <DATETIME>` (with or without offset, as for `create`) is required and must be later than the current one; an extension reopens a closed Ballot without a Response. Prints the Ballot like `get`:
 
 ```text
 $ vota ballot extend 1 --voting-deadline 2026-11-03T12:00:00Z
@@ -552,7 +576,7 @@ $ vota ballot create --title "" --option A --option B --voting-deadline 2026-10-
 Error: 422 invalid_input: must not be empty (field: title)        (exit 5)
 
 $ vota ballot create --title T --option A --option B --voting-deadline "next friday"
-Error: 422 invalid_input: not an RFC 3339 timestamp with offset (field: voting_deadline)   (exit 5)
+Error: 422 invalid_input: not an RFC 3339 timestamp, or a local date-time in the server's default time zone (YYYY-MM-DDTHH:MM[:SS]) (field: voting_deadline)   (exit 5)
 
 $ vota ballot list --token vta_wrong
 Error: 401 Unauthorized (the Admin Token was refused: unknown, revoked or expired)          (exit 6)

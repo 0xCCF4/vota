@@ -15,6 +15,7 @@ use sqlx::SqlitePool;
 
 use crate::clock::Clock;
 use crate::config::Config;
+use crate::domain::admin_token::FileAdminTokens;
 use crate::{api, config, data, http, input, web};
 
 /// Everything request handlers need. Cheap to clone.
@@ -26,13 +27,17 @@ pub struct AppState {
     pub(crate) themes: Arc<web::themes::Themes>,
     pub(crate) failed_lookups: Arc<http::rate_limit::Failures>,
     pub(crate) failed_admin_auth: Arc<http::rate_limit::Failures>,
+    /// The Admin Tokens of `admin_token_files`, as read at startup.
+    pub(crate) file_admin_tokens: Arc<FileAdminTokens>,
 }
 
 impl AppState {
     /// Opens (creating if needed) the database and applies pending migrations.
     /// Trusted proxies in IPv4-mapped IPv6 form are taken as IPv4 networks.
     /// Loads the Theme registry from the theme and logo folders, which fails
-    /// with an error naming the file at fault.
+    /// with an error naming the file at fault, and the Admin Token files
+    /// (`admin_token_files`), which fails naming the file but not its
+    /// contents.
     pub async fn new(mut config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Self> {
         config.trusted_proxies = (config.trusted_proxies.iter().copied())
             .map(config::canonical_network)
@@ -41,6 +46,7 @@ impl AppState {
             config.theme_folder.as_deref(),
             config.logo_folder.as_deref(),
         )?;
+        let file_admin_tokens = api::admin::load_token_files(&config.admin_token_files)?;
         let db = data::db::open(&config.database_path).await?;
         Ok(Self {
             db,
@@ -49,6 +55,7 @@ impl AppState {
             themes: Arc::new(themes),
             failed_lookups: Arc::default(),
             failed_admin_auth: Arc::default(),
+            file_admin_tokens: Arc::new(file_admin_tokens),
         })
     }
 }

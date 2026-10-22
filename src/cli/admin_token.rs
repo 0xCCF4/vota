@@ -5,7 +5,7 @@ use crate::clock::{Clock as _, SystemClock};
 use crate::config::Config;
 use crate::data::admin_tokens::{self, AdminTokenInfo, NewAdminToken};
 use crate::data::db;
-use crate::domain::admin_token::{self, AdminTokenLabel};
+use crate::domain::admin_token::{self, AdminTokenLabel, AdminTokenSecret};
 use untrusted_value::{SanitizeValue as _, UntrustedValue};
 
 use super::escape::{escape_json, printable};
@@ -31,6 +31,10 @@ pub(super) enum AdminTokenCommand {
         #[arg(long, value_name = "RFC3339", value_parser = parse_rfc3339)]
         expires_at: Option<DateTime<Utc>>,
     },
+    /// Print a new Admin Token on stdout without storing it anywhere, for an
+    /// Admin Token file (`admin_token_files`). Needs no configuration or
+    /// database.
+    Generate,
     /// List all Admin Tokens: ID, created, expiry, whether expired, last use
     /// (to the minute) and label. Never shows secrets or their hashes.
     List {
@@ -94,6 +98,12 @@ fn expiry(
         Some(expires_at) if expires_at > latest => Err(too_late()),
         expires_at => Ok(expires_at),
     }
+}
+
+/// Prints a fresh Admin Token for an Admin Token file: nothing is stored,
+/// and no configuration or database is read.
+pub(super) fn generate() {
+    println!("{}", AdminTokenSecret::generate().expose());
 }
 
 impl AdminTokenCommand {
@@ -160,6 +170,7 @@ impl AdminTokenCommand {
                 id: None,
                 label: None,
             } => unreachable!("clap requires an ID or a label"),
+            Self::Generate => unreachable!("handled by Cli::run, without a database"),
         }
     }
 }

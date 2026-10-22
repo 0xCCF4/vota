@@ -1,5 +1,7 @@
 //! Bearer-token check for the whole admin router. Missing, unknown and expired
 //! (per Clock) Admin Tokens all get the same bare 401. Tokens are never logged.
+//! A token passes if it is one of the Admin Token files' (compared by hash,
+//! without the database) or a stored one.
 //!
 //! Failed checks are rate-limited per client IP with their own budget
 //! (`rate_limit.admin_failed_auth` per `rate_limit.admin_window`, see
@@ -9,8 +11,10 @@
 //!
 //! The audit log: every admin request, whatever its outcome, is one
 //! `info` event "admin request" of the target `vota::admin_audit`, with
-//! the fields `token_id` (the Admin Token's ID as `admin-token list` shows
-//! it; absent unless the check passed), `method`, `route` (the route
+//! the fields `token_id` (absent unless the check passed: a stored Admin
+//! Token's ID as `admin-token list` shows it, e.g. `7`, or `file:<n>` for
+//! the token of the n-th file of `admin_token_files`, counted from 1, which
+//! can't collide with an ID), `method`, `route` (the route
 //! template, e.g. `/admin/ballots/{id}`, never the request's path or
 //! query), `status` and `client_ip` (as the rate limit resolves it; absent
 //! without a known peer). Failed checks are summed up per client IP rather
@@ -18,6 +22,7 @@
 //! in a window and one when it spends the budget. Nothing else about the
 //! request is logged: no Admin Token, Ballot Token, Voter Reference or body.
 
+use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 
 use axum::extract::{ConnectInfo, MatchedPath, Request, State};
@@ -37,8 +42,27 @@ const AUDIT: &str = "vota::admin_audit";
 /// What the audit event says about a request.
 #[derive(Default)]
 struct Audit {
-    token_id: Option<i64>,
+    token: Option<AcceptedToken>,
     client: Option<IpAddr>,
+}
+
+/// The Admin Token a request passed the check with, as the audit log's
+/// `token_id` shows it.
+#[derive(Clone, Copy)]
+enum AcceptedToken {
+    /// A stored Admin Token: its ID, e.g. `7`.
+    Stored(i64),
+    /// The token of the n-th file of `admin_token_files` (from 1): `file:<n>`.
+    File(usize),
+}
+
+impl fmt::Display for AcceptedToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Stored(id) => write!(f, "{id}"),
+            Self::File(position) => write!(f, "file:{position}"),
+        }
+    }
 }
 
 pub(super) async fn require_admin_token(
@@ -55,7 +79,7 @@ pub(super) async fn require_admin_token(
     let response = check(&state, request, next, &mut audit).await;
     tracing::info!(
         target: AUDIT,
-        token_id = audit.token_id,
+        token_id = audit.token.map(tracing::field::display),
         %method,
         %route,
         status = response.status().as_u16(),
@@ -98,13 +122,20 @@ async fn check(state: &AppState, request: Request, next: Next, audit: &mut Audit
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(bearer_credentials);
-    let token_id = match presented {
-        Some(presented) => admin_tokens::authenticate(&state.db, presented, now).await,
+    let accepted = match presented {
+        // The files first: they need no database, so they still work when
+        // it fails.
+        Some(presented) => match state.file_admin_tokens.position(presented) {
+            Some(position) => Ok(Some(AcceptedToken::File(position))),
+            None => admin_tokens::authenticate(&state.db, presented, now)
+                .await
+                .map(|id| id.map(AcceptedToken::Stored)),
+        },
         None => Ok(None),
     };
-    match token_id {
-        Ok(Some(token_id)) => {
-            audit.token_id = Some(token_id);
+    match accepted {
+        Ok(Some(token)) => {
+            audit.token = Some(token);
             // Given back before the handler runs.
             drop(reservation);
             next.run(request).await

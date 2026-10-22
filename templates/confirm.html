@@ -1,23 +1,33 @@
 {% extends "base.html" %}
 {% block title %}Confirm your answer: {{ title }}{% endblock %}
 {% block content %}
-<h1>{{ title }}</h1>
+<header class="ballot-header">
+  <h1>{{ title }}</h1>
+</header>
 {% if description %}
 <div class="description">{{ description }}</div>
 {% endif %}
-<h2>Confirm your answer</h2>
-<p>You chose:</p>
-<ul class="selection">
-  {% for option in selected %}
-  <li>{{ option.label }}</li>
-  {% endfor %}
-</ul>
-<p class="warning"><strong>You cannot change your answer after you confirm it.</strong></p>
-<form method="post" action="">
-  {% for option in selected %}
-  <input type="hidden" name="option" value="{{ option.id }}">
-  {% endfor %}
-  <button type="submit" name="confirm" value="yes">Confirm and submit</button>
-</form>
-<p><a href="">Go back and choose again</a></p>
+<section class="confirmation">
+  <h2>Confirm your answer</h2>
+  <div class="outcome">
+    {% if selected %}
+    <p class="chosen">You chose</p>
+    <ul class="selection">
+      {% for option in selected %}
+      <li>{{ option.label }}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="chosen">You chose no option.</p>
+    {% endif %}
+  </div>
+  <p class="warning"><strong>You cannot change your answer after you confirm it.</strong></p>
+  <form method="post" action="" class="actions">
+    {% for option in selected %}
+    <input type="hidden" name="option" value="{{ option.id }}">
+    {% endfor %}
+    <button type="submit" name="confirm" value="yes">Confirm and submit</button>
+    <a class="back" href="">Go back and choose again</a>
+  </form>
+</section>
 {% endblock %}

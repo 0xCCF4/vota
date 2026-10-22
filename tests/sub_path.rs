@@ -78,7 +78,7 @@ async fn the_voting_pages_script_and_its_urls_are_under_the_prefix() {
         "{html}"
     );
     assert!(
-        html.contains(r#"<script src="/polls/assets/app/ballot.js?v="#),
+        html.contains(r#"<script type="module" src="/polls/assets/app/"#),
         "{html}"
     );
     assert!(
@@ -98,7 +98,7 @@ async fn the_assets_the_page_links_are_served_under_the_prefix() {
     for path in [
         "/polls/assets/themes/dark/style.css",
         "/polls/assets/logos/club",
-        "/polls/assets/app/ballot.js",
+        "/polls/assets/app/0000000000000000/main.js",
         "/polls/assets/app/ballot.css",
     ] {
         assert_eq!(app.get(path).await.status(), StatusCode::OK, "{path}");
@@ -210,7 +210,7 @@ async fn requests_outside_the_prefix_get_a_plain_not_found_that_the_rate_limit_i
         format!("/b/{unknown}"),
         format!("/api/b/{unknown}"),
         "/admin/ballots".to_owned(),
-        "/assets/app/ballot.js".to_owned(),
+        "/assets/app/0000000000000000/main.js".to_owned(),
         "/polls".to_owned(),
         "/pollsb/x".to_owned(),
         "/".to_owned(),

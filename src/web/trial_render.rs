@@ -53,10 +53,12 @@ pub(super) enum Problem {
 
 /// Renders `templates` (the Theme `theme`'s) for every voting page state:
 /// `ballot.html` open (single and multiple choice, Final and Editable,
-/// unanswered, answered), closed (with a Response, with the Fallback
-/// applied, without an answer) and `confirm.html`, each with and without
+/// unanswered, answered, answered with no Option), closed (with a Response,
+/// with one of no Option, with the Fallback applied, without an answer) and
+/// `confirm.html` (also with no Option chosen), each with and without
 /// description, logo, accent colour, notice and base path other than `/`
-/// (and, while open and unanswered, with and without a Fallback), so a
+/// (and, while open and unanswered, with and without a Fallback and, on
+/// multiple choice, with and without Allow No Option), so a
 /// Theme that only breaks under a prefix fails even on a root deployment.
 /// `base.html` is rendered through them. The pages that take a Response
 /// (open and unanswered, or Editable) and `confirm.html` must have a
@@ -99,6 +101,15 @@ pub(super) fn check(theme: &str, templates: &Environment<'_>) -> Result<(), Fail
                 )
             })?;
         }
+        let ballot = allowing_no_option(sample_ballot(
+            ChoiceMode::Multiple,
+            SubmissionMode::Final,
+            decorated,
+        ));
+        let context = ballot_page::confirmation_context(&ballot, &[], &look, NONCE);
+        render(templates, "confirm.html", context, true, || {
+            sample_name("confirmation, no Option", decorated)
+        })?;
     }
     Ok(())
 }
@@ -165,6 +176,19 @@ fn voting_page_samples(decorated: bool) -> Vec<(&'static str, Ballot, DateTime<U
         });
         ballot
     };
+    let answered_no_option = |submission_mode| {
+        let mut ballot = allowing_no_option(sample_ballot(
+            ChoiceMode::Multiple,
+            submission_mode,
+            decorated,
+        ));
+        ballot.response = Some(Response {
+            option_ids: Vec::new(),
+            answered_at: open,
+            changed_at: open,
+        });
+        ballot
+    };
     vec![
         (
             "open, single choice, Final",
@@ -192,6 +216,21 @@ fn voting_page_samples(decorated: bool) -> Vec<(&'static str, Ballot, DateTime<U
             open,
         ),
         ("Final, answered", answered(SubmissionMode::Final), open),
+        (
+            "Editable, answered with no Option",
+            answered_no_option(SubmissionMode::Editable),
+            open,
+        ),
+        (
+            "Final, answered with no Option",
+            answered_no_option(SubmissionMode::Final),
+            open,
+        ),
+        (
+            "closed with a Response of no Option",
+            answered_no_option(SubmissionMode::Final),
+            closed,
+        ),
         (
             "closed with a Response",
             answered(SubmissionMode::Final),
@@ -239,6 +278,8 @@ fn sample_ballot(
         description: decorated.then(|| "A *sample* description with a [link](/).".to_owned()),
         options,
         choice_mode,
+        // Decorated: with Allow No Option where it may be on.
+        allow_no_option: decorated && choice_mode == ChoiceMode::Multiple,
         submission_mode,
         voting_deadline: sample_deadline(),
         purge_date: sample_deadline() + Duration::days(30),
@@ -256,6 +297,14 @@ fn sample_ballot(
         with_fallback(ballot)
     } else {
         ballot
+    }
+}
+
+/// `ballot` (multiple choice) with Allow No Option on.
+fn allowing_no_option(ballot: Ballot) -> Ballot {
+    Ballot {
+        allow_no_option: true,
+        ..ballot
     }
 }
 

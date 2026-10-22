@@ -56,8 +56,9 @@ async fn try_insert(
     let id: i64 = sqlx::query_scalar(
         "INSERT INTO ballots (token, title, description, choice_mode, submission_mode,
                               voting_deadline, purge_date, created_at,
-                              group_name, voter_reference, theme, accent_color, logo)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+                              group_name, voter_reference, theme, accent_color, logo,
+                              allow_no_option)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
     )
     .bind(token.as_str())
     .bind(draft.title.as_str())
@@ -77,6 +78,7 @@ async fn try_insert(
     .bind(draft.theme.as_str())
     .bind(draft.accent_color.as_ref().map(AccentColor::as_str))
     .bind(draft.logo.as_ref().map(LogoName::as_str))
+    .bind(draft.allow_no_option)
     .fetch_one(&mut *tx)
     .await?;
 
@@ -123,6 +125,7 @@ async fn try_insert(
             .map(|description| description.as_str().to_owned()),
         options,
         choice_mode: draft.choice_mode,
+        allow_no_option: draft.allow_no_option,
         submission_mode: draft.submission_mode,
         voting_deadline: millis::truncate(draft.voting_deadline)?,
         purge_date: millis::truncate(draft.purge_date)?,

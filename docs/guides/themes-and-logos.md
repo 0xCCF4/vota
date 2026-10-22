@@ -23,11 +23,11 @@ The binary ships three Themes. Each is a stylesheet on top of the built-in templ
 
 | Name      | Look |
 | --------- | ---- |
-| `classic` | The default: a light card on a soft grey-blue background. It is also the fallback when a Ballot's Theme no longer exists. |
-| `dark`    | Light text on a dark surface (`color-scheme: dark`). |
-| `minimal` | Plain serif typography on white, hairline rules. |
+| `classic` | The default: a calm card on a soft grey-blue background, Options as large cards. Light, or dark when the voter's system prefers dark (`prefers-color-scheme`). It is also the fallback when a Ballot's Theme no longer exists. |
+| `dark`    | The same layout, always dark (`color-scheme: dark`), with an accent line on the card. |
+| `minimal` | Plain serif typography, no card, Options as rows between hairline rules; black on white, or white on near-black when the system prefers dark. |
 
-None of them loads fonts or images from anywhere.
+None of them loads fonts or images from anywhere. All three style the same built-in templates and the script's states (see [The built-in templates' structure](#the-built-in-templates-structure)), honour `prefers-reduced-motion` and `forced-colors`, and keep text at WCAG AA contrast.
 
 ## Folder Themes
 
@@ -85,16 +85,17 @@ The authoritative list is the module comment in `src/web/templates.rs`. Every va
 | ------------------- | ----- |
 | `options`           | All Options, each with `id`, `label` and `checked` (in the current Response). |
 | `multiple`          | `true` on a multiple-choice Ballot (checkboxes), `false` on single choice (radio buttons). |
+| `allow_no_option`   | `true` if the voter may answer with no Option at all (Allow No Option, multiple choice only). The built-in legend then reads "Choose any number of options (or none)". |
 | `editable`          | `true` if the Submission Mode is Editable. |
 | `answered`          | `true` if the Ballot has a Response. |
 | `read_only`         | `true` if the Response is shown without a form (Final and answered, or closed with a Response). |
 | `closed`            | `true` once the Voting Deadline has passed. |
-| `selected`          | Options of the current Response (`id`, `label`); empty without one. |
+| `selected`          | Options of the current Response (`id`, `label`); empty without one, and also for a Response of no Option (tell them apart by `answered`; the built-in template then says "You chose no option."). |
 | `upcoming_fallback` | While voting is open and there is no Response: the Fallback's Options (`id`, `label`), else none. |
 | `fallback`          | Once voting has closed without a Response: the applied Fallback's Options, else none. |
 | `message`           | A notice for the voter (why a posted Response was refused or invalid), or none. Show it, e.g. with `role="alert"`. |
 | `deadline_utc`      | The Voting Deadline as RFC 3339 UTC, for `<time datetime="…">`. |
-| `deadline_local`    | The deadline formatted in [`default_time_zone`](../reference/configuration.md#default_time_zone), e.g. `Tuesday, 1 December 2026, 13:00 CET`. |
+| `deadline_local`    | The deadline formatted in [`default_time_zone`](../reference/configuration.md#default_time_zone), short, with the year and zone, e.g. `Tue 1 Dec 2026, 13:00 CET`. (With JavaScript the script shows it in the voter's own zone instead, e.g. `Tomorrow, 13:00`.) |
 | `status`            | The Ballot Status in words: `Unanswered`, `Answered` or `Auto-fallback`. |
 | `revision`          | The Ballot's revision (an integer). Not needed: the app [inserts the hidden field](#the-hidden-revision-field) itself. |
 
@@ -102,7 +103,7 @@ The authoritative list is the module comment in `src/web/templates.rs`. Every va
 
 | Variable   | Value |
 | ---------- | ----- |
-| `selected` | The Options the voter chose (`id`, `label`). |
+| `selected` | The Options the voter chose (`id`, `label`); empty if they chose none on a Ballot with Allow No Option (the built-in template then says "You chose no option." and posts no `option` field). |
 | `revision` | The Ballot's revision. Not needed: the app [inserts the hidden field](#the-hidden-revision-field) itself. |
 
 `confirm.html` must post them again with `confirm=yes`, in a `<form method="post">` (the app adds the revision):
@@ -122,10 +123,38 @@ Without JavaScript the page is a plain form, and the script builds on the same m
 
 - a `<form method="post" action="">` (posting to the page itself) while the Ballot takes a Response; the app adds the hidden `revision` field to it ([below](#the-hidden-revision-field)), and the [startup check](#startup-checks-and-errors) fails without it;
 - inputs named `option` with the Option `id` as value: `type="radio"` when not `multiple`, `type="checkbox"` when `multiple`, each with an `id` and a `<label for="…">`;
-- the deadline as `<time datetime="{{ deadline_utc }}">{{ deadline_local }}</time>`, so the script can show it in local time with the countdown beside it;
+- the deadline as `<time datetime="{{ deadline_utc }}">{{ deadline_local }}</time>`, so the script can show it in local time;
 - everything that changes with the Ballot Status inside `<body>`: the script saves without a reload by swapping in the server's fresh `<body>`.
 
+Optional, for the script:
+
+- a **countdown placeholder**: an empty element with the class `vota-countdown`, e.g. `<span class="vota-countdown" role="timer"></span>` beside the deadline. The script fills it ("in 2 days, 4 hours", at the deadline "Voting has closed."). It no longer adds a countdown of its own: without a placeholder the page shows none, but still closes the form at the deadline and reloads;
+- a **card per Option**: the input and its label inside an element with the class `option` (the built-in `<div class="option">`). On an Editable Ballot the script marks that element's save state (`data-vota-save`, see [below](#the-voting-pages-script)); without one it marks the input's parent element.
+
 Start from the built-in `templates/ballot.html` and change it rather than writing one from scratch.
+
+### The built-in templates' structure
+
+The built-in Themes style these class names; a Theme that keeps the built-in templates (only a `style.css`) can rely on them:
+
+| Class | Element |
+| ----- | ------- |
+| `ballot-header` | The `<header>` with the title (`h1`) and `.meta`. |
+| `meta` | The row under the title: `.status`, `.deadline` (with `<time>` and the `.vota-countdown` placeholder) and, on its own line, `.submission-mode` or `.recorded`. |
+| `status` | The status pill: `data-state="open"`, `"answered"` or `"closed"`, its text `Open`, `Answered` or `Closed` (after a visually hidden "Status: "), the Ballot Status in its `title`. |
+| `submission-mode` | "You can change your answer until then." (Editable, in `.meta`); with `final`: "Once you submit your answer, you cannot change it." (Final, in `.actions` beside the button). |
+| `recorded` | "Your answer has been recorded." (Final, answered), or with `submission-mode` "Your answer is saved. You can change it until then." (Editable, answered). |
+| `description`, `message` | The description; a notice why a post was refused (`role="alert"`). |
+| `fallback` | While open with a Fallback: the hint "No answer by the deadline? The Option marked default will be recorded." (`id="fallback-hint"`, which the Fallback's inputs name in `aria-describedby`). |
+| `fallback-badge` | The small "default" badge on each Fallback Option's card (and in the hint). |
+| `outcome` | Read-only and closed views: one line, `p.chosen` or `p.closed` ("You chose", "No answer was given, so this was recorded:", "No answer was given.") and the `ul.selection` chips (`fallback-applied` when the Fallback was recorded). |
+| `options`, `option` | The Option cards inside the `fieldset`; each `.option` holds the input, its `label` and maybe a `.fallback-badge`. |
+| `actions` | The submit button's row (and the script's status line on an Editable Ballot). |
+| `visually-hidden` | Text for screen readers only (the built-in Themes define it). |
+
+`confirm.html` uses `ballot-header`, `confirmation` (around its `h2`, `.outcome`, `.warning` and the form), `actions` (the form) and `back` (the "Go back and choose again" link).
+
+Earlier versions showed the Fallback as `p.fallback` plus `ul.fallback-options`, the Ballot Status as `<p class="status">Status: …</p>`, and the outcome as a sentence plus a bulleted `ul.selection`. Folder Themes with their own templates are unaffected; a stylesheet-only Theme written for the old markup should be checked against the classes above.
 
 ## CSS custom properties
 
@@ -141,29 +170,46 @@ A Theme's stylesheet should therefore define its own defaults on `:root` and use
 
 | Property            | Used for | Set by the Theme Tweak |
 | ------------------- | -------- | ---------------------- |
-| `--accent`          | Buttons, highlights, the dialog's top border | yes |
+| `--accent`          | Buttons, the selected Option, highlights | yes |
 | `--accent-contrast` | Text on `--accent` (button labels) | yes |
 | `--bg`              | Page background; dialog background fallback | no |
-| `--surface`         | Card and dialog background | no |
+| `--surface`         | Card and dialog background; text on the state icons | no |
 | `--text`            | Text colour | no |
+| `--muted`           | Secondary text: the meta line, the idle status line, badges | no |
 | `--border`          | Borders | no |
-| `--danger`          | Error notices and error dialogs | no |
-| `--radius`          | Corner radius of the card and dialog | no |
+| `--danger`, `--danger-bg` | Error notices and dialogs; a failed save (Option card, status line) | no |
+| `--success`, `--success-bg` | A saved change: the status line, the badge, the fading highlight | no |
+| `--radius`, `--radius-sm` | Corner radius of the card and dialog; of the status line and small boxes | no |
 
-The script's stylesheet (`/assets/app/ballot.css`) uses `--accent`, `--surface`, `--bg`, `--text`, `--border`, `--danger` and `--radius`, each with a fallback, so a Theme may define any subset. The built-in Themes also define some extras for their own use, such as `--muted`, `--link` and `--focus`. Don't use `--accent` for body text or links: any colour can be chosen as accent, and contrast would not hold.
+The script's stylesheet (`/assets/app/ballot.css`) uses all of these but `--accent-contrast`, each with a fallback, so a Theme may define any subset, and defining them is how a Theme restyles the save states. The built-in Themes also define some extras for their own use, such as `--surface-sunken`, `--border-strong`, `--selected-bg`, `--notice-bg`, `--link`, `--focus`, a spacing scale (`--space-1` … `--space-7`) and a type scale (`--step--1` … `--step-3`). Don't use `--accent` for body text or links: any colour can be chosen as accent, and contrast would not hold.
 
 An accent colour is only ever applied as the value of `--accent`, never as raw CSS, and only after it has been validated as `#rrggbb`.
 
 ## The voting page's script
 
-Templates don't include the app's script. The app inserts it and its stylesheet into every rendered `ballot.html` page, right before the first `</head>` (without one, before `</body>`; without either, at the end), with every URL under the base path (here `/`; under a sub-path e.g. `/polls/assets/app/ballot.js?v=…` and `data-api="/polls/api/b/…"`):
+Templates don't include the app's script. The app inserts it and its stylesheet into every rendered `ballot.html` page, right before the first `</head>` (without one, before `</body>`; without either, at the end), with every URL under the base path (here `/`; under a sub-path e.g. `/polls/assets/app/<version>/main.js` and `data-api="/polls/api/b/…"`):
 
 ```html
 <link rel="stylesheet" href="/assets/app/ballot.css?v=ba35bbdb81344a06">
-<script src="/assets/app/ballot.js?v=15290a99132a5f48" defer data-api="…" data-page="…" data-deadline="…" data-now="…" data-open="true" data-revision="0" data-choice-mode="single" data-submission-mode="final" data-needs-confirmation="true"></script>
+<script type="module" src="/assets/app/0d4c1e7a9b2f6835/main.js" id="vota-enhancement" data-api="…" data-page="…" data-deadline="…" data-now="…" data-open="true" data-revision="0" data-choice-mode="single" data-submission-mode="final" data-needs-confirmation="true" data-allow-no-option="false" data-answered="false"></script>
 ```
 
-So a Theme can't drop it. Because it comes after the Theme's stylesheet, but every rule is wrapped in `:where()` (zero specificity), a Theme's own rules win. The script adds these classes, all of which a Theme may restyle: `.vota-countdown`, `.vota-countdown-line`, `.vota-dialog`, `.vota-dialog-title`, `.vota-dialog-message`, `.vota-dialog-actions`, `.vota-primary`, `.vota-secondary`, `.vota-selection`, `.vota-warning`, `.vota-visually-hidden`. The dialog's buttons are plain `<button>`s and get the Theme's button styles.
+So a Theme can't drop it. The script is a set of native ES modules (`main.js` imports its siblings relatively); it finds its own tag by the id `vota-enhancement`, so a Theme must not give that id to anything else. Browsers without module support get the plain no-JS page. The stylesheet comes after the Theme's stylesheet, but every styling rule is wrapped in `:where()` (zero specificity), so a Theme's own rules win; only the rules hiding the autosaved form's Submit button and an idle "Retry now" use `!important`.
+
+What the script adds or sets, all of which a Theme may restyle:
+
+| Hook | What |
+| ---- | ---- |
+| `.vota-countdown` | The template's countdown placeholder, filled with "in 2 days, 4 hours" (a timer, not announced on every tick). |
+| `form[data-vota-autosave]` | An Editable Ballot's form while it autosaves; its Submit button gets `hidden`, except while a Ballot with Allow No Option has no Response yet (Save then saves "no Option"). |
+| `.vota-autosave` with `data-state` | The status line, put where the Submit button was: `idle` ("Changes are saved automatically."), `pending` ("Saving…"), `saved` ("Saved"), `failed` ("Not saved, retrying…" or "Not saved." with the reason) or `invalid` (an empty multiple-choice selection without Allow No Option, not sent). Inside: `.vota-autosave-status` (`role="status"`, `aria-live="polite"`) with `.vota-autosave-icon`, `.vota-autosave-text` and `.vota-autosave-reason`, and the `button.vota-retry` ("Retry now", only while failed). |
+| `data-vota-save` on an Option's card | `pending`, `saved` (removed after about two seconds; `ballot.css` fades a highlight from `--success-bg`) or `failed` (until resolved), only on Options whose shown state differs from what is stored (or was just saved). The card is the input's closest `.option`, else its parent. |
+| `.vota-option-state` | The badge appended to such a card: "Saving…", "Saved" or "Not saved" (`aria-hidden`; the status line says it in words). |
+| `.vota-dialog` with `data-state` | The dialog: `confirm`, `saving`, `saved` or `error`; inside `.vota-dialog-title`, `.vota-dialog-message`, `.vota-selection`, `.vota-warning`, `.vota-dialog-actions` with `button.vota-primary` and `button.vota-secondary`. |
+| `.vota-visually-hidden` | The live region announcing "Voting has closed." |
+| `time[data-vota-local]` | A `<time>` rewritten into the voter's local time; its `title` holds the precise date and zone. |
+
+The built-in Themes style the failed card themselves (`.options .option[data-vota-save="failed"]`, specific enough to beat their selected-card rule); `ballot.css` only outlines it in `--danger` for Themes that don't. The dialog's and status line's buttons are plain `<button>`s and get the Theme's button styles; give `.vota-secondary` an outlined look.
 
 `confirm.html` gets no script: with JavaScript, confirmation happens in a dialog on the voting page instead.
 
@@ -225,7 +271,7 @@ On NixOS, a folder given as a Nix path (`theme_folder = ./themes;`) is copied to
 
 ## Startup checks and errors
 
-When `serve` starts (the `admin-token` commands don't read Themes or logos), each Theme is loaded and **trial-rendered**: `ballot.html` in every voting page state (open single/multiple choice, Final/Editable, answered, closed with a Response, with the Fallback applied, without an answer) and `confirm.html` for both Choice Modes, each with and without description, logo, accent colour and notice, and at the base path `/` as well as under a sample prefix (`/sample/base-path/`), so a Theme that only breaks under a sub-path fails on a root deployment too. The sample data is obviously fake. A template that parses but fails when rendered (an `extends` of a missing template, an unknown filter, …) stops startup instead of giving voters an error page later. So does a Theme whose voting page, in a state that takes a Response (open and unanswered, or Editable), or whose confirmation step has no `<form method="post">` for the app to put the [hidden revision field](#the-hidden-revision-field) in, and so does a Theme with a `<select>`, `<textarea>` or `<button>` named `revision` in a `<form method="post">` of either page, in any sample state. If the form went missing through an overridden `base.html` (say, one without `{% block content %}`), the error names the built-in template and that `base.html`. The error names the Theme, the file and the sample page. Real examples:
+When `serve` starts (the `admin-token` commands don't read Themes or logos), each Theme is loaded and **trial-rendered**: `ballot.html` in every voting page state (open single/multiple choice, Final/Editable, answered, answered with no Option, closed with a Response, with one of no Option, with the Fallback applied, without an answer) and `confirm.html` for both Choice Modes and with no Option chosen, each with and without description, logo, accent colour and notice, and at the base path `/` as well as under a sample prefix (`/sample/base-path/`), so a Theme that only breaks under a sub-path fails on a root deployment too. The sample data is obviously fake. A template that parses but fails when rendered (an `extends` of a missing template, an unknown filter, …) stops startup instead of giving voters an error page later. So does a Theme whose voting page, in a state that takes a Response (open and unanswered, or Editable), or whose confirmation step has no `<form method="post">` for the app to put the [hidden revision field](#the-hidden-revision-field) in, and so does a Theme with a `<select>`, `<textarea>` or `<button>` named `revision` in a `<form method="post">` of either page, in any sample state. If the form went missing through an overridden `base.html` (say, one without `{% block content %}`), the error names the built-in template and that `base.html`. The error names the Theme, the file and the sample page. Real examples:
 
 ```text
 Error: the Theme "broken" does not render: template themes/broken/templates/ballot.html fails on the sample page (open, single choice, Final, without description, logo, accent colour or notice, at base path /): unknown filter: filter shout is unknown (in ballot.html:2)
@@ -374,7 +420,7 @@ The head of the page shows the Theme's stylesheet, the accent colour Tweak in a 
 <style nonce="Feyo432_Die-QTT4EiNgNg">:root { --accent: #1f6f8b; --accent-contrast: #ffffff; }</style>
 
 <link rel="stylesheet" href="/assets/app/ballot.css?v=ba35bbdb81344a06">
-<script src="/assets/app/ballot.js?v=15290a99132a5f48" defer data-api="/api/b/-hOo6wzrXM9ygkWznaPMCA/response" data-page="/b/-hOo6wzrXM9ygkWznaPMCA" data-deadline="2026-12-01T12:00:00Z" data-now="2026-10-17T10:52:53.567077535Z" data-open="true" data-revision="0" data-choice-mode="single" data-submission-mode="final" data-needs-confirmation="true"></script>
+<script type="module" src="/assets/app/0d4c1e7a9b2f6835/main.js" id="vota-enhancement" data-api="/api/b/-hOo6wzrXM9ygkWznaPMCA/response" data-page="/b/-hOo6wzrXM9ygkWznaPMCA" data-deadline="2026-12-01T12:00:00Z" data-now="2026-10-17T10:52:53.567077535Z" data-open="true" data-revision="0" data-choice-mode="single" data-submission-mode="final" data-needs-confirmation="true" data-allow-no-option="false" data-answered="false"></script>
 </head>
 <body>
 
@@ -410,6 +456,6 @@ curl -s -I http://localhost:8080/assets/logos/acme
 
 - **Restyle a built-in Theme**: create `<theme_folder>/classic/style.css` (copy `themes/classic/style.css` from the repository and edit it). All Ballots using `classic`, and those whose Theme has gone, get it.
 - **Change only the voting page**: put just `templates/ballot.html` in the Theme. It extends the built-in `base.html`.
-- **Under a sub-path**: with `public_base_url = "http://localhost:8080/polls/"` the same files work unchanged. The page then links `/polls/assets/themes/acme/style.css`, `/polls/assets/app/ballot.js?v=…` (with `data-api="/polls/api/b/<token>/response"` and `data-page="/polls/b/<token>"`) and `<img class="logo" src="/polls/assets/logos/acme" alt="ACME">`; the admin API returns `"url":"http://localhost:8080/polls/b/<token>"` and the voter API `"logo_url":"http://localhost:8080/polls/assets/logos/acme"`.
+- **Under a sub-path**: with `public_base_url = "http://localhost:8080/polls/"` the same files work unchanged. The page then links `/polls/assets/themes/acme/style.css`, `/polls/assets/app/<version>/main.js` (with `data-api="/polls/api/b/<token>/response"` and `data-page="/polls/b/<token>"`) and `<img class="logo" src="/polls/assets/logos/acme" alt="ACME">`; the admin API returns `"url":"http://localhost:8080/polls/b/<token>"` and the voter API `"logo_url":"http://localhost:8080/polls/assets/logos/acme"`.
 - **A fixed logo, whatever the Ballot's Tweak**: in `base.html`, `<header class="masthead"><img class="logo" src="{{ base_path }}assets/logos/acme" alt="ACME"></header>` renders as `src="/assets/logos/acme"` at the root and `src="/polls/assets/logos/acme"` under `/polls/`.
 - **Check a Theme before deploying**: start `serve` on the same configuration with a throwaway database and any free port, e.g. `VOTA_DATABASE_PATH=/tmp/theme-check.db VOTA_PORT=0 vota --config <config> serve`. It loads and trial-renders all Themes and fails before `listening on …` if one is broken; otherwise stop it with Ctrl-C. `admin-token` commands don't load Themes, so they can't be used for this check.

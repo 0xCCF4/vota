@@ -3,6 +3,7 @@
 
 mod auth;
 mod ballots;
+mod token_files;
 
 use axum::Router;
 use axum::http::StatusCode;
@@ -10,6 +11,8 @@ use axum::middleware::from_fn_with_state;
 use axum::routing::{any, get, post};
 
 use crate::AppState;
+
+pub(crate) use token_files::load as load_token_files;
 
 /// Every path under `/admin`, including unknown ones, sits behind the token
 /// check, so the admin routes can't even be probed without a valid token.

@@ -77,6 +77,12 @@ pub struct Config {
     pub rate_limit: RateLimit,
     /// Limits on the listener's connections.
     pub connections: Connections,
+    /// Files that each hold one pre-provisioned Admin Token (e.g. agenix
+    /// secrets passed in as systemd credentials), accepted beside the
+    /// database's. Read by `serve` at startup only: a missing, unreadable or
+    /// malformed file stops it. In the environment a list such as
+    /// `VOTA_ADMIN_TOKEN_FILES='["/run/credentials/vota.service/token"]'`.
+    pub admin_token_files: Vec<PathBuf>,
 }
 
 /// Limits on the listener's HTTP connections, so slow or idle clients can't
@@ -159,6 +165,7 @@ impl Default for Config {
             nat64_prefixes: Vec::new(),
             rate_limit: RateLimit::default(),
             connections: Connections::default(),
+            admin_token_files: Vec::new(),
         }
     }
 }

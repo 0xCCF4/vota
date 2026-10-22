@@ -39,9 +39,12 @@ pub(super) async fn create(
     }
 }
 
-/// Where admin-given dates may lie at `now`, by the configured horizon.
+/// How admin-given dates are read (local ones in the configured
+/// `default_time_zone`) and where they may lie at `now`, by the configured
+/// horizon.
 fn date_bounds(state: &AppState, now: DateTime<Utc>) -> DateBounds {
-    DateBounds::new(now, state.config.max_date_horizon)
+    let config = &state.config;
+    DateBounds::new(now, config.max_date_horizon, config.default_time_zone)
 }
 
 /// The admin API's response for a Ballot ID that is malformed or unknown.
@@ -164,6 +167,7 @@ fn admin_view(state: &AppState, ballot: &Ballot, now: DateTime<Utc>) -> Value {
         "description": ballot.description,
         "options": ballot_json::options(ballot),
         "choice_mode": ballot.choice_mode.as_str(),
+        "allow_no_option": ballot.allow_no_option,
         "submission_mode": ballot.submission_mode.as_str(),
         "voting_deadline": rfc3339(ballot.voting_deadline),
         "purge_date": rfc3339(ballot.purge_date),

@@ -89,7 +89,7 @@ pub(crate) async fn edit<E>(
                             group_name = ?5, voter_reference = ?6,
                             voting_deadline = ?7, purge_date = ?8,
                             description = ?9, theme = ?10, accent_color = ?11,
-                            logo = ?12, revision = revision + 1
+                            logo = ?12, allow_no_option = ?14, revision = revision + 1
          WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM responses WHERE ballot_id = ?1)
            AND NOT (voting_deadline <= ?13
                     AND EXISTS (SELECT 1 FROM fallback_options WHERE ballot_id = ?1))",
@@ -107,6 +107,7 @@ pub(crate) async fn edit<E>(
     .bind(changes.accent_color.as_ref().map(AccentColor::as_str))
     .bind(changes.logo.as_ref().map(LogoName::as_str))
     .bind(now.timestamp_millis())
+    .bind(changes.allow_no_option)
     .execute(&mut *tx)
     .await;
     let written = match written {

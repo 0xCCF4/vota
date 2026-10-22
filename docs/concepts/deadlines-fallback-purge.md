@@ -4,7 +4,7 @@ Every Ballot has two dates: the **Voting Deadline**, which closes voting, and th
 
 ## Voting Deadline
 
-- Given by the admin as RFC 3339 with an explicit offset, stored in UTC to the millisecond.
+- Given by the admin as RFC 3339 with an explicit offset, or as a local date-time without offset in the server's [`default_time_zone`](../reference/configuration.md#default_time_zone) (see [Conventions](../reference/admin-api.md#conventions)); stored in UTC to the millisecond.
 - **Exclusive**: voting is open while `now < voting_deadline`. At the deadline itself it is closed. A Response submitted at that instant gets `409 voting_closed` (API) or `409` and "Voting has closed. Your answer could not be accepted." (form).
 - Must lie in the future when it is set (create, edit, extend), and no later than now + [`max_date_horizon`](../reference/configuration.md#max_date_horizon) (default one year). A date exactly at the horizon is accepted.
 - The voter sees it on the page in the configured [`default_time_zone`](../reference/configuration.md#default_time_zone). With JavaScript it is shown in their local time, with a countdown.
@@ -64,7 +64,8 @@ Real examples:
 The Fallback is an optional set of the Ballot's own Options, chosen by the admin. It is recorded as the result if the voter has not responded by the Voting Deadline.
 
 - **Given by Option labels** in the admin API (`"fallback": ["Friday 15 January"]`), because Options only get their IDs on creation, and new ones whenever the admin replaces them. Responses return it as `[{id, label}]` (admin) or `{"option_ids": [...]}` (voter).
-- **Obeys the Choice Mode, never empty**: exactly one Option on a single-choice Ballot, one or more on a multiple-choice Ballot. No duplicates. Only this Ballot's Options.
+- **Obeys the Choice Mode, never empty**: exactly one Option on a single-choice Ballot, one or more on a multiple-choice Ballot, even one with Allow No Option (no Fallback means none; there is no "Fallback of no Option"). No duplicates. Only this Ballot's Options.
+- **Never applies after a Response**, including a Response of no Option on a Ballot with Allow No Option: the voter answered "none of these", and that is the result.
 - **Visible to the voter from the start**: the voting page says "If you don't answer by the deadline, this will be recorded: …", and the voter API has `fallback`. Only `result` and `status` say whether it has been applied.
 - **Applied, not written**: when the deadline passes without a Response, `status` becomes `auto_fallback` and `result` is `{"source": "fallback", …}`. Nothing in the database changes, which is why an extension can undo it.
 - **Locks the content once applied**: while the Ballot is Auto-fallback, a `PATCH` naming any field other than `group` and `voter_reference` gets `409 fallback_applied`, and nothing changes. This is checked before the values are looked at, and again in the same conditional write as the edit, at the request's time, so an edit can't land at or after the deadline. To change the Ballot anyway, extend the deadline first (see the example below). A Ballot whose deadline passed without a Fallback stays editable.

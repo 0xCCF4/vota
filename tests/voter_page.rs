@@ -51,9 +51,7 @@ async fn voting_page_shows_the_deadline_in_the_configured_time_zone() {
     let html = body_string(app.get(&format!("/b/{token}")).await).await;
 
     assert!(
-        html.contains(
-            r#"<time datetime="2030-01-22T12:00:00Z">Tuesday, 22 January 2030, 13:00 CET</time>"#
-        ),
+        html.contains(r#"<time datetime="2030-01-22T12:00:00Z">Tue 22 Jan 2030, 13:00 CET</time>"#),
         "{html}"
     );
 }

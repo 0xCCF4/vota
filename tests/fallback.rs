@@ -204,27 +204,38 @@ async fn the_voter_api_shows_a_null_fallback_when_the_ballot_has_none() {
 #[tokio::test]
 async fn the_voting_page_shows_the_fallback_before_the_deadline() {
     let app = TestApp::new().await;
-    let (token, _) = create(&app, "multiple", "editable", Some(json!(["Wed", "Mon"]))).await;
+    let (token, ids) = create(&app, "multiple", "editable", Some(json!(["Wed", "Mon"]))).await;
     app.clock.set(deadline() - chrono::Duration::seconds(1));
 
     let html = body_string(app.get(&format!("/b/{token}")).await).await;
 
     assert!(
         html.contains(
-            r#"<p class="fallback">If you don't answer by the deadline, this will be recorded:</p>"#
+            r#"<p class="fallback" id="fallback-hint">No answer by the deadline? The Options marked <span class="fallback-badge">default</span> will be recorded.</p>"#
         ),
         "{html}"
     );
-    assert!(
-        html.contains(r#"<ul class="fallback-options">"#)
-            && html.contains("<li>Mon</li>")
-            && html.contains("<li>Wed</li>"),
-        "{html}"
-    );
-    assert!(
-        !html.contains("<li>Tue</li>") && !html.contains("<li>Thu</li>"),
-        "{html}"
-    );
+    // The Fallback's Options are marked on their own cards, and their
+    // inputs are described by the hint; the others are not.
+    for (id, label, is_fallback) in [
+        (&ids[0], "Mon", true),
+        (&ids[1], "Tue", false),
+        (&ids[2], "Wed", true),
+        (&ids[3], "Thu", false),
+    ] {
+        let label_tag = format!(r#"<label for="option-{id}">{label}</label>"#);
+        let at = html
+            .find(&label_tag)
+            .unwrap_or_else(|| panic!("{label_tag} not in {html}"));
+        let card = &html[at..at + html[at..].find("</div>").unwrap()];
+        assert_eq!(
+            card.contains(r#"<span class="fallback-badge" title="Recorded if you don't answer by the deadline">default</span>"#),
+            is_fallback,
+            "{label}: {card}"
+        );
+        let input = format!(r#"id="option-{id}" aria-describedby="fallback-hint">"#);
+        assert_eq!(html.contains(&input), is_fallback, "{label}: {html}");
+    }
     assert!(html.contains("<form"), "{html}");
 }
 
@@ -235,7 +246,8 @@ async fn the_voting_page_mentions_no_fallback_when_the_ballot_has_none() {
 
     let html = body_string(app.get(&format!("/b/{token}")).await).await;
 
-    assert!(!html.contains("If you don't answer"), "{html}");
+    assert!(!html.contains("No answer by the deadline"), "{html}");
+    assert!(!html.contains("fallback-badge"), "{html}");
 }
 
 #[tokio::test]
@@ -247,8 +259,9 @@ async fn the_voting_page_drops_the_fallback_notice_once_the_voter_answered() {
 
     let html = body_string(app.get(&format!("/b/{token}")).await).await;
 
-    assert!(html.contains("Your answer has been saved."), "{html}");
-    assert!(!html.contains("If you don't answer"), "{html}");
+    assert!(html.contains("Your answer is saved."), "{html}");
+    assert!(!html.contains("No answer by the deadline"), "{html}");
+    assert!(!html.contains("fallback-badge"), "{html}");
 }
 
 #[tokio::test]
@@ -262,11 +275,11 @@ async fn the_closed_page_shows_the_applied_fallback() {
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_string(response).await;
     assert!(
-        html.contains(r#"<p class="status">Status: Auto-fallback</p>"#),
+        html.contains(r#"<p class="status" data-state="closed" title="Ballot Status: Auto-fallback"><span class="visually-hidden">Status: </span>Closed</p>"#),
         "{html}"
     );
     assert!(
-        html.contains("Voting closed. No answer was given. Fallback applied:"),
+        html.contains(r#"<p class="closed">No answer was given, so this was recorded:</p>"#),
         "{html}"
     );
     assert!(
@@ -293,7 +306,10 @@ async fn the_closed_page_shows_the_response_not_the_fallback_when_the_voter_answ
 
     let html = body_string(app.get(&format!("/b/{token}")).await).await;
 
-    assert!(html.contains("Voting closed. You chose:"), "{html}");
+    assert!(
+        html.contains(r#"<p class="closed">You chose</p>"#),
+        "{html}"
+    );
     assert!(html.contains("<li>Tue</li>"), "{html}");
     assert!(!html.contains("Fallback"), "{html}");
 }
@@ -314,7 +330,10 @@ async fn a_form_response_after_the_deadline_shows_the_applied_fallback_with_409(
         html.contains("Voting has closed. Your answer could not be accepted."),
         "{html}"
     );
-    assert!(html.contains("Fallback applied:"), "{html}");
+    assert!(
+        html.contains("No answer was given, so this was recorded:"),
+        "{html}"
+    );
     assert!(html.contains("<li>Thu</li>"), "{html}");
     assert_eq!(app.voter_view(&token).await["status"], "auto_fallback");
 }

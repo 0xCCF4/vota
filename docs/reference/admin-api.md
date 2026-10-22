@@ -19,7 +19,7 @@ All examples were run against a real `vota serve` with `public_base_url = "http:
 
 - **Request bodies** are JSON objects with `Content-Type: application/json`. Anything else gets `415` with an empty body. A body that is not valid JSON (truncated, empty, not UTF-8, trailing data after the object) gets `422 invalid_json`. Unknown fields are rejected with `422 invalid_input`. Bodies over 64 KiB are refused with `413`.
 - **Ballots are identified by their internal ID**, a positive integer, never by their Ballot Token. The ID in the path must be written literally, the way the server writes it: digits only, no sign, no leading zero, no percent-encoding. Anything else is the same `404` as an unknown ID.
-- **Timestamps** in requests are RFC 3339 *with an explicit offset* (`Z` or `±hh:mm`), e.g. `2026-12-01T12:00:00+01:00`. They are converted to UTC and stored to the millisecond. Responses always use UTC with a `Z` suffix, with fractional seconds only when there are any (`2026-12-01T10:00:00.123Z`).
+- **Timestamps** in requests (`voting_deadline`, `purge_date`) are either RFC 3339 with an explicit offset (`Z` or `±hh:mm`), e.g. `2026-12-01T12:00:00+01:00`, or a **local date-time without offset**, `YYYY-MM-DDTHH:MM:SS` or `YYYY-MM-DDTHH:MM` (fractional seconds allowed after the seconds, as in RFC 3339), e.g. `2026-12-01T12:00`. A local date-time is read in the server's [`default_time_zone`](configuration.md#default_time_zone) (`UTC` unless configured; on NixOS the system's zone). A local time that doesn't exist there (skipped when the clocks go forward, e.g. `2027-03-28T02:30` in `Europe/Berlin`) or exists twice (when they go back, e.g. `2027-10-31T02:30`) is refused with `422`; give an offset for those. Nothing else is accepted, such as a date alone, a space instead of `T`, or a zone name. Either way the time is converted to UTC and stored to the millisecond, and the future and horizon checks apply to the converted instant. Responses always use UTC with a `Z` suffix, with fractional seconds only when there are any (`2026-12-01T10:00:00.123Z`).
 - **Text** fields are Unicode-NFC-normalised and trimmed before they are checked, so the stored value is the normalised one. See [Trust boundary and sanitization](../concepts/trust-boundary.md) for the full rules.
 - **Purged Ballots** (Purge Date at or before now) don't exist for any endpoint, even before the purge sweep has deleted them.
 
@@ -36,6 +36,8 @@ Send the Admin Token as a bearer token on every request under `/admin`, includin
 ```http
 Authorization: Bearer vta_…
 ```
+
+An Admin Token is either one created with [`admin-token create`](cli.md#admin-token-create) (stored in the database) or one from a file of [`admin_token_files`](configuration.md#admin_token_files) (read at startup). Both are accepted the same way.
 
 The scheme may be written in any case (`Bearer`, `bearer`, `BEARER`), followed by one space and the token. A missing, malformed, unknown, revoked or expired Admin Token gets the same bare response, so the response never reveals which one it was:
 
@@ -57,7 +59,7 @@ Each `401` counts against the client IP (resolved as for the voter rate limit: t
 ```http
 HTTP/1.1 429 Too Many Requests
 content-type: application/json
-content-security-policy: default-src 'none'; style-src 'sha256-fwc9WGoqADQdm5haKHxoYVOpKWUbs7FdN0iDsZxLtaE='; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+content-security-policy: default-src 'none'; style-src 'sha256-VOff0Gj0DrKquTZBjdtxMO7iduoPD6gMHxobtltf1y4='; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
 x-content-type-options: nosniff
 referrer-policy: no-referrer
 cache-control: no-store
@@ -76,7 +78,7 @@ Every admin request is logged as one event, without the Admin Token itself:
 INFO vota::admin_audit: admin request token_id=1 method=PATCH route=/admin/ballots/{id} status=422 client_ip=127.0.0.1
 ```
 
-- `token_id` is the Admin Token's ID as [`admin-token list`](cli.md#admin-token-list) shows it, present only when the token was accepted;
+- `token_id` is present only when the token was accepted: the Admin Token's ID as [`admin-token list`](cli.md#admin-token-list) shows it (e.g. `token_id=1`), or `file:<n>` for the token of the n-th file of [`admin_token_files`](configuration.md#admin_token_files), counted from 1 (e.g. `token_id=file:1`). Database IDs are plain numbers, so the two never collide. On NixOS, `file:<n>` is the n-th entry of `services.vota.adminTokenFiles` (credential `vota-admin-token-<n>`);
 - `route` is the route template (`/admin/ballots/{id}`; `/admin`, `/admin/` or `/admin/{*rest}` for unknown paths; with the base path in front under a sub-path), never the request's path or query. `method` is the standard method's name, or `OTHER` for any other method;
 - `client_ip` is resolved as for the rate limit. It is absent when it can't be resolved: on the `400` for an unreadable `X-Forwarded-For`. `status` is the response's status.
 
@@ -87,7 +89,7 @@ WARN vota::admin_audit: failed Admin Token check; further ones from this client 
 WARN vota::admin_audit: too many failed Admin Token checks; this client is refused (429) on the admin API until its window of 1m ends client_ip=203.0.113.9 failures=3
 ```
 
-Admin Tokens, Ballot Tokens, Voter References and request bodies are never logged. The events have the target `vota::admin_audit`, so they can be selected with `RUST_LOG` (e.g. `RUST_LOG=info,vota::admin_audit=warn` keeps only the warnings). Each Admin Token also records when it was last accepted, to the minute: see [`admin-token list`](cli.md#admin-token-list).
+Admin Tokens, Ballot Tokens, Voter References and request bodies are never logged. The events have the target `vota::admin_audit`, so they can be selected with `RUST_LOG` (e.g. `RUST_LOG=info,vota::admin_audit=warn` keeps only the warnings). Each Admin Token in the database also records when it was last accepted, to the minute: see [`admin-token list`](cli.md#admin-token-list). Tokens from files record no last use; find their uses in this log (`token_id=file:<n>`).
 
 ## `POST /admin/ballots`: create a Ballot
 
@@ -101,9 +103,10 @@ Creates one Ballot and answers `201 Created` with its [admin view](#the-admin-vi
 | `description`     | string                   | no       | none                                            | Limited Markdown, 1–10 000 characters. May span lines (`\r\n` and `\r` become `\n`; tabs allowed). Stored and returned as source; rendered only on the voting page. |
 | `options`         | array of `{"label": string}` | yes  |                                                 | At least 2 Options, in display order. Each `label` is single-line text, 1–200 characters. Labels must be unique (exact match after normalisation). No upper count other than the 64 KiB body limit. |
 | `choice_mode`     | `"single"` or `"multiple"` | no     | `"single"`                                      | Exact match: no trimming, no case folding. |
+| `allow_no_option` | boolean                  | no       | `false`                                         | **Allow No Option**: the voter may answer with no Option at all ("none of these"). Only with `"choice_mode": "multiple"`; `true` on a single-choice Ballot is a `422` naming `allow_no_option`. Such a Response makes the Ballot Answered (the Fallback doesn't apply); the Fallback itself is still never empty. |
 | `submission_mode` | `"final"` or `"editable"`  | no     | `"final"`                                       | Exact match. |
-| `voting_deadline` | RFC 3339 string          | yes      |                                                 | Must lie in the future and no later than now + [`max_date_horizon`](configuration.md#max_date_horizon) (default 1 year). |
-| `purge_date`      | RFC 3339 string          | no       | `voting_deadline` + [`default_purge_gap`](configuration.md#default_purge_gap) (4 weeks) | If given: in the future, no later than now + `max_date_horizon`, and not before `voting_deadline` (equal is allowed). The computed default is not capped by the horizon. |
+| `voting_deadline` | [timestamp](#conventions) string | yes      |                                                 | Must lie in the future and no later than now + [`max_date_horizon`](configuration.md#max_date_horizon) (default 1 year). |
+| `purge_date`      | [timestamp](#conventions) string | no       | `voting_deadline` + [`default_purge_gap`](configuration.md#default_purge_gap) (4 weeks) | If given: in the future, no later than now + `max_date_horizon`, and not before `voting_deadline` (equal is allowed). The computed default is not capped by the horizon. |
 | `fallback`        | array of strings         | no       | no Fallback                                     | **Option labels**, not IDs: the Options get their IDs only now. Each label is normalised like an Option label and must match one of this Ballot's Options. No duplicates. Must obey the Choice Mode: exactly one label for single choice, one or more for multiple choice. `[]` is rejected. |
 | `group`           | string                   | no       | none                                            | Single-line text, 1–200 characters. |
 | `voter_reference` | string                   | no       | none                                            | Single-line text, 1–200 characters. Unique within its Group: a second Ballot with the same Group and Voter Reference is a `409`. Without a Group it is not constrained. |
@@ -126,6 +129,7 @@ curl -s -X POST http://localhost:8080/admin/ballots \
 ```json
 {
   "accent_color": null,
+  "allow_no_option": false,
   "choice_mode": "single",
   "created_at": "2026-10-17T10:51:05.876Z",
   "description": null,
@@ -167,6 +171,7 @@ The deadline was given in `+01:00` and is returned in UTC. The Purge Date defaul
     { "label": "Saturday 16 January" }
   ],
   "choice_mode": "multiple",
+  "allow_no_option": true,
   "submission_mode": "editable",
   "voting_deadline": "2026-12-20T18:00:00+01:00",
   "purge_date": "2027-01-31T00:00:00Z",
@@ -189,6 +194,7 @@ curl -s -X POST http://localhost:8080/admin/ballots \
 ```json
 {
   "accent_color": "#e07a1f",
+  "allow_no_option": true,
   "choice_mode": "multiple",
   "created_at": "2026-10-17T10:51:05.902Z",
   "description": "Pick **every** date you can make.\n\nDetails: [wiki](https://wiki.example.org/offsite)",
@@ -260,6 +266,7 @@ Whether an edit is a content edit depends on which fields are present, not on wh
 | Field                                           | Absent        | `null`                         | Value |
 | ----------------------------------------------- | ------------- | ------------------------------ | ----- |
 | `title`, `choice_mode`, `submission_mode`       | kept          | `422 wrong type or value`      | as on creation |
+| `allow_no_option`                               | kept: re-checked against the resulting Choice Mode | `422 wrong type or value` | `true` or `false`, checked against the resulting Choice Mode |
 | `theme`                                         | kept (not re-checked, even if the Theme has since been removed) | `422` (name `"classic"` to go back to the default) | must exist now |
 | `description`, `group`, `voter_reference`, `accent_color` | kept | removes the value             | as on creation |
 | `logo`                                          | kept (not re-checked) | removes the logo       | must exist now |
@@ -279,6 +286,8 @@ x-content-type-options: nosniff
 
 {"error":"invalid_input","field":"voting_deadline","message":"would move the Purge Date further ahead than max_date_horizon allows; give a purge_date as well"}
 ```
+
+**Allow No Option on edit.** Turning it on or off is a content edit like any other: only while the Ballot is Unanswered, and the voter's page must be reloaded before a Response is accepted (the revision changes). So it can't be turned off under a recorded Response of no Option: once the voter has answered (with or without Options), the edit gets `409 already_answered`, and the Response stays as it was. A Response of no Option sent on the page as it was before the admin turned the setting off gets `409 ballot_changed`. Switching `choice_mode` to `"single"` while it is on is a `422` naming `choice_mode`; send `"allow_no_option": false` in the same request. (It is never switched off silently.)
 
 If you replace the Options and the current Fallback names a label that no longer exists, the edit is rejected. Give the Fallback again (or `null`) in the same request:
 
@@ -358,7 +367,7 @@ Moves the Voting Deadline later. Allowed at any time before the Purge Date, also
 
 | Field             | Type            | Required | Rules |
 | ----------------- | --------------- | -------- | ----- |
-| `voting_deadline` | RFC 3339 string | yes      | In the future, no later than now + `max_date_horizon`, and **later than the current Voting Deadline**. |
+| `voting_deadline` | [timestamp](#conventions) string | yes      | In the future, no later than now + `max_date_horizon`, and **later than the current Voting Deadline**. |
 
 No other field is accepted (`purge_date` is an unknown field here). If the new deadline passes the Purge Date, the Purge Date shifts to keep its current gap. The shifted Purge Date is computed, so it is not capped by the horizon.
 
@@ -423,6 +432,7 @@ curl -s 'http://localhost:8080/admin/ballots?group=offsite-2027&status=answered'
   "ballots": [
     {
       "accent_color": "#e07a1f",
+      "allow_no_option": true,
       "choice_mode": "multiple",
       "created_at": "2026-10-17T10:51:05.902Z",
       "description": "Pick **every** date you can make.\n\nDetails: [wiki](https://wiki.example.org/offsite)",
@@ -476,6 +486,7 @@ Every successful Ballot response (create, fetch, edit, extend, and each list ent
 | `description`     | string or `null`          | Markdown source, not HTML. |
 | `options`         | array of `{id, label}`    | In display order. `id` is 11 base64url characters (64 random bits), generated by the server. |
 | `choice_mode`     | `"single"` / `"multiple"` | |
+| `allow_no_option` | boolean                   | Allow No Option: whether a Response may select no Option. Only ever `true` on a multiple-choice Ballot. |
 | `submission_mode` | `"final"` / `"editable"`  | |
 | `voting_deadline` | RFC 3339 UTC              | Exclusive: voting is closed *at* this instant. |
 | `purge_date`      | RFC 3339 UTC              | From this instant on the Ballot is gone. Never before `voting_deadline`. |
@@ -487,8 +498,8 @@ Every successful Ballot response (create, fetch, edit, extend, and each list ent
 | `logo`            | string or `null`          | The logo name as stored (it may have been removed from the logo folder since; the page then shows none). |
 | `fallback`        | array of `{id, label}` or `null` | The Fallback's Options in Option order. |
 | `status`          | `"unanswered"` / `"answered"` / `"auto_fallback"` | Derived at request time; see [Ballot lifecycle](../concepts/ballot-lifecycle.md). |
-| `result`          | object or `null`          | `{source, option_ids, options}`: `source` is `"response"` or `"fallback"`, and `options` holds `{id, label}` of `option_ids`. `null` while there is no Response and the Fallback doesn't apply (yet). |
-| `response`        | object or `null`          | `{option_ids, answered_at, changed_at}`: `answered_at` is when the first Response came, `changed_at` when the latest did (equal on Final Ballots). |
+| `result`          | object or `null`          | `{source, option_ids, options}`: `source` is `"response"` or `"fallback"`, and `options` holds `{id, label}` of `option_ids`. `null` while there is no Response and the Fallback doesn't apply (yet). Empty `option_ids` and `options` only for a Response of no Option (Allow No Option): that is an answer, unlike `null`. |
+| `response`        | object or `null`          | `{option_ids, answered_at, changed_at}`: `answered_at` is when the first Response came, `changed_at` when the latest did (equal on Final Ballots). `option_ids` is `[]` for a Response of no Option; `null` means no Response. |
 
 ## Errors
 
@@ -544,13 +555,17 @@ Valid JSON of the wrong shape (a wrong type, an unknown or missing field, `[]` i
 | `not an Option of this Ballot` / `duplicate Option` | `fallback[i]` |
 | `select an Option` / `single choice: select exactly one Option` | `fallback` |
 | `the Fallback's Options are no longer all Options of this Ballot; give the Fallback again` | `fallback` (edit) |
-| `not an RFC 3339 timestamp with offset` | `voting_deadline`, `purge_date` |
+| `not an RFC 3339 timestamp, or a local date-time in the server's default time zone (YYYY-MM-DDTHH:MM[:SS])` | `voting_deadline`, `purge_date` |
+| `does not exist in the server's default time zone (skipped by a clock change); give a UTC offset` | `voting_deadline`, `purge_date` (a local date-time) |
+| `is ambiguous in the server's default time zone (repeated by a clock change); give a UTC offset` | `voting_deadline`, `purge_date` (a local date-time) |
 | `must lie in the future` | `voting_deadline`, `purge_date` |
 | `must not lie further ahead than max_date_horizon allows` | `voting_deadline`, `purge_date` |
 | `must not be before the Voting Deadline` | `purge_date` |
 | `would move the Purge Date further ahead than max_date_horizon allows; give a purge_date as well` | `voting_deadline` (edit without `purge_date`) |
 | `must be later than the current Voting Deadline` | `voting_deadline` (extend) |
 | `must be one of "single", "multiple"` | `choice_mode` |
+| `only a multiple-choice Ballot can allow no Option` | `allow_no_option` |
+| `the Ballot allows no Option, which needs multiple choice; set allow_no_option to false as well` | `choice_mode` (edit to `"single"` while Allow No Option stays on) |
 | `must be one of "final", "editable"` | `submission_mode` |
 | `must be one of "unanswered", "answered", "auto_fallback"` | `status` query parameter |
 | `must be given at most once` | repeated query parameter |
@@ -564,8 +579,14 @@ Some real examples:
 ```sh
 curl -s -X POST http://localhost:8080/admin/ballots \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"title": "T", "options": [{"label": "A"}, {"label": "B"}], "voting_deadline": "2026-12-01T12:00:00"}'
-# {"error":"invalid_input","field":"voting_deadline","message":"not an RFC 3339 timestamp with offset"}
+  -d '{"title": "T", "options": [{"label": "A"}, {"label": "B"}], "voting_deadline": "2026-12-01 12:00"}'
+# {"error":"invalid_input","field":"voting_deadline","message":"not an RFC 3339 timestamp, or a local date-time in the server's default time zone (YYYY-MM-DDTHH:MM[:SS])"}
+
+# With default_time_zone = "Europe/Berlin":
+curl -s -X POST http://localhost:8080/admin/ballots \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"title": "T", "options": [{"label": "A"}, {"label": "B"}], "voting_deadline": "2027-10-31T02:30"}'
+# {"error":"invalid_input","field":"voting_deadline","message":"is ambiguous in the server's default time zone (repeated by a clock change); give a UTC offset"}
 
 curl -s -X POST http://localhost:8080/admin/ballots \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \

@@ -30,14 +30,29 @@ pub(super) struct Fields {
     /// Single or multiple choice.
     #[arg(long, value_enum)]
     choice_mode: Option<ChoiceMode>,
+    /// Allow No Option: the voter may answer with no Option at all (multiple
+    /// choice only). `--allow-no-option` alone means true; on `edit`,
+    /// `--allow-no-option=false` turns it off.
+    #[arg(
+        long,
+        value_name = "true|false",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        value_parser = clap::value_parser!(bool),
+    )]
+    allow_no_option: Option<bool>,
     /// Final (submitted once) or editable (changeable until the deadline).
     #[arg(long, value_enum)]
     submission_mode: Option<SubmissionMode>,
-    /// Voting Deadline, RFC 3339 with offset, e.g. 2026-12-01T12:00:00+01:00.
-    #[arg(long, value_name = "RFC3339")]
+    /// Voting Deadline: RFC 3339, e.g. 2026-12-01T12:00:00+01:00; without
+    /// an offset (2026-12-01T12:00) it is local time in the server's
+    /// default time zone.
+    #[arg(long, value_name = "DATETIME")]
     voting_deadline: Option<String>,
-    /// Purge Date, RFC 3339 with offset.
-    #[arg(long, value_name = "RFC3339")]
+    /// Purge Date: RFC 3339, or without an offset local time in the
+    /// server's default time zone.
+    #[arg(long, value_name = "DATETIME")]
     purge_date: Option<String>,
     /// An Option's label for the Fallback; repeat it for more than one.
     #[arg(long = "fallback", value_name = "LABEL")]
@@ -125,6 +140,7 @@ impl Fields {
             "choice_mode",
             self.choice_mode.map(enum_name).map(Value::from),
         );
+        put("allow_no_option", self.allow_no_option.map(Value::from));
         put(
             "submission_mode",
             self.submission_mode.map(enum_name).map(Value::from),

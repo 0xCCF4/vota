@@ -80,8 +80,14 @@ impl TestApp {
     /// letting the test change the folders' contents: the Theme registry is
     /// loaded afresh.
     pub async fn restart(self, change: impl FnOnce(&Config)) -> Self {
-        let config = Config::clone(&self.state.config);
-        change(&config);
+        self.restart_with_config(|config| change(config)).await
+    }
+
+    /// Like [`Self::restart`], but the test may also change the
+    /// configuration (e.g. `admin_token_files`) for the new start.
+    pub async fn restart_with_config(self, change: impl FnOnce(&mut Config)) -> Self {
+        let mut config = Config::clone(&self.state.config);
+        change(&mut config);
         let state = AppState::new(config, Arc::new(self.clock.clone()))
             .await
             .unwrap();
@@ -449,7 +455,7 @@ pub fn not_found_token_paths(prefix: &str, unknown: &str) -> Vec<String> {
 /// style (by its hash: `body { font-family: … }` in `not_found.html` and
 /// `server_error.html`).
 pub const ERROR_CSP: &str = "default-src 'none'; \
-                             style-src 'sha256-fwc9WGoqADQdm5haKHxoYVOpKWUbs7FdN0iDsZxLtaE='; \
+                             style-src 'sha256-VOff0Gj0DrKquTZBjdtxMO7iduoPD6gMHxobtltf1y4='; \
                              base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 /// Asserts the security headers of an error response: [`ERROR_CSP`],

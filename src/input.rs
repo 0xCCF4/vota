@@ -32,7 +32,9 @@
 //!   current revision is [`SelectionRejection::Stale`] / [`FormProblem::Stale`],
 //!   answered as "the Ballot changed" (409);
 //! - Option IDs: exactly 11 canonical base64url characters, then membership in
-//!   the Ballot; a selection has no duplicates and obeys the Ballot's rules;
+//!   the Ballot; a selection has no duplicates and obeys the Ballot's rules
+//!   (empty only if the Ballot allows no Option; in the form, no `option`
+//!   field at all is the empty selection);
 //!   malformed IDs and duplicates are 422s, but a well-formed ID that is not
 //!   one of the Ballot's current Options (most likely one the admin has
 //!   since replaced) is [`SelectionRejection::NotOnBallot`] /
@@ -54,7 +56,14 @@
 //! - enums (Choice Mode, Submission Mode): an exact match against the known
 //!   names, no trimming or case folding; absent means the default (creation)
 //!   or the current value (edit), `null` is rejected;
-//! - timestamps: RFC 3339 with an explicit offset, converted to UTC; a Voting
+//! - Allow No Option (`allow_no_option`): a JSON boolean, `null` rejected;
+//!   absent means `false` (creation) or the current value (edit); `true`
+//!   only with the resulting Choice Mode `multiple` (a kept `true` with a
+//!   change to single choice is the `choice_mode`'s fault);
+//! - timestamps: RFC 3339 with an explicit offset, or a local date-time
+//!   (`YYYY-MM-DDTHH:MM[:SS[.f]]`, exactly) in the configured
+//!   `default_time_zone`, refused if a clock change skips or repeats it;
+//!   converted to UTC; a Voting
 //!   Deadline must lie in the future at creation, on edit and on extension
 //!   (where it must also be later than the current one); a Purge Date given at
 //!   creation or on edit must lie in the future and not before the
@@ -77,15 +86,25 @@
 //!   Group;
 //! - forms (no-JS voting page): URL-encoded only, unknown fields rejected,
 //!   every field read as a list of values; the same Option rules as JSON;
-//! - app asset query (`/assets/app/…?v=<version>`): exactly `v=` and the
-//!   current version, compared as is (no decoding), or it is not the current
-//!   version; never rejected, only cached briefly;
+//! - app asset query (`/assets/app/ballot.css?v=<version>`): exactly `v=`
+//!   and the current version, compared as is (no decoding), or it is not
+//!   the current version; never rejected, only cached briefly;
+//! - app module path (`/assets/app/{version}/{file}`): both segments
+//!   literal (any percent-encoding is a plain 404); the version is the
+//!   current one by exact match or else not (never rejected, only cached
+//!   briefly); the file is one of the embedded modules' names by exact
+//!   match, or a plain 404;
 //! - `X-Forwarded-For`: read only from a trusted proxy (ignored from any other
 //!   peer), a strict list of at most 32 bare IP addresses; anything else from a
 //!   trusted proxy is a 400 on the rate-limited voter routes, charged to no
 //!   rate-limit bucket ([`client_ip`]);
 //! - Admin Token labels (`admin-token create --label`, not HTTP): like any
 //!   single-line text, at most 200 characters ([`admin_token`]);
+//! - Admin Token files (`admin_token_files`, read at startup, not HTTP):
+//!   UTF-8 holding exactly one Admin Token, `vta_` and 43 canonical
+//!   base64url characters, after trimming surrounding whitespace; kept as
+//!   its SHA-256 hash only. The error never quotes the contents
+//!   ([`admin_token_file`]);
 //! - JSON: an object at the top level, unknown fields rejected, trailing data
 //!   rejected; body size limited to [`BODY_LIMIT_BYTES`] on every route (413
 //!   above it).
@@ -124,6 +143,8 @@ mod text;
 mod theme;
 
 #[cfg(feature = "server")]
+pub use admin_token::admin_token_file;
+#[cfg(feature = "server")]
 pub use ballot::{
     CreateBallotRequest, DateBounds, EditBallotRequest, ExtendRequest, ListBallotsQuery,
     ballot_changes, ballot_filter, edit_scope, extension, new_ballot,
@@ -135,15 +156,17 @@ pub use client_ip::{client_ip, is_local_unproxied};
 pub use error::InputError;
 #[cfg(feature = "server")]
 pub use extract::{
-    AssetNamePath, AssetQuery, BallotIdPath, BallotTokenPath, BodyRejection, NotFound,
-    UntrustedForm, UntrustedJson, UntrustedQuery,
+    AppModulePath, AssetNamePath, AssetQuery, BallotIdPath, BallotTokenPath, BodyRejection,
+    NotFound, UntrustedForm, UntrustedJson, UntrustedQuery,
 };
 #[cfg(feature = "server")]
 pub use response::{
     FormProblem, ResponseForm, ResponseRequest, SelectionRejection, api_response, form_response,
 };
 #[cfg(feature = "server")]
-pub use theme::{is_current_version, logo_asset, theme_asset};
+pub use theme::{
+    app_module, is_current_version, is_current_version_segment, logo_asset, theme_asset,
+};
 
 /// Maximum request body size on every route.
 #[cfg(feature = "server")]

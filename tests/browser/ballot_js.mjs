@@ -1,7 +1,8 @@
-// Browser check of the voting page's script (static/ballot.js) in headless
-// Chromium, driven over the DevTools protocol. Dependency-free: Node (with
-// its built-in fetch and WebSocket) and Chromium only. Not part of
-// `cargo test`; run it by hand after changing the script:
+// Browser check of the voting page's script (static/js/, native ES
+// modules) in headless Chromium, driven over the DevTools protocol.
+// Dependency-free: Node (with its built-in fetch and WebSocket) and Chromium
+// only. Not part of `cargo test`; run it by hand after changing the script,
+// its stylesheet or the markup it relies on:
 //
 //   cargo build
 //   nix shell nixpkgs#nodejs nixpkgs#chromium -c node tests/browser/ballot_js.mjs
@@ -12,22 +13,29 @@
 // forwards the prefix sends them) and also checks that the page requests
 // nothing outside it. Run it both ways after changing the script.
 //
-// It starts the debug binary (`target/debug/vota`, or $VOTA_BIN) on a
-// free local port against a temp database, creates Ballots through the admin
-// API, and checks with JavaScript enabled: the local-time deadline and
-// countdown, saving through the voter API with the saving/saved dialog, the
-// Final confirmation dialog, the error dialogs per error code (forced by
-// intercepting the API request), an Option the admin replaced or a title
-// the admin changed while the page was open (409 `ballot_changed`, then a
-// reload; the script sends the page's revision), the countdown
-// closing the page, focus and reduced motion, an accent-colour Ballot's
-// in-place update (its nonce'd style), the content-versioned script
-// URL, no requests to other hosts and no CSP violations; and, with
-// JavaScript disabled, the plain form flow, the replaced-Option notice and a
-// title changed between the confirmation step and confirming.
+// It starts the debug binary (`target/debug/vota`, or $VOTA_BIN) on a free
+// local port against a temp database (with a folder Theme whose template
+// has no countdown placeholder), creates Ballots through the admin API, and
+// checks with JavaScript enabled: the short local-time deadline with its
+// precise tooltip and the countdown placeholder; Editable autosave (no
+// Submit button, saved/pending/failed feedback per Option and in the status
+// line, strictly one request in flight with coalescing of fast clicks, the
+// multiple-choice debounce, automatic retries with backoff, Retry-After,
+// "Retry now" and the online event, definitive errors not retried, the 409
+// dialogs and reloads, the beforeunload prompt only while something is not
+// stored); the Final confirmation dialog and its error dialogs; an Option
+// the admin replaced or a title the admin changed while the page was open
+// (409 `ballot_changed`, then a reload; the script sends the page's
+// revision); the countdown closing the page, with and without a
+// placeholder; focus and reduced motion; an accent-colour Ballot's in-place
+// update (its nonce'd style); the modules loading under the CSP from their
+// content-versioned directory, no requests to other hosts and no CSP
+// violations; and, with JavaScript disabled, the plain form flows (Final
+// and Editable), the replaced-Option notice and a title changed between the
+// confirmation step and confirming.
 
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
@@ -73,6 +81,14 @@ async function waitFor(what, probe, timeout = 10000) {
 // --- The server ------------------------------------------------------------
 
 const dir = mkdtempSync(join(tmpdir(), "vota-browser-"));
+// A folder Theme whose voting page has no countdown placeholder.
+const themes = join(dir, "themes");
+mkdirSync(join(themes, "bare", "templates"), { recursive: true });
+writeFileSync(join(themes, "bare", "style.css"), "");
+writeFileSync(
+  join(themes, "bare", "templates", "ballot.html"),
+  readFileSync("templates/ballot.html", "utf8").replace('<span class="vota-countdown" role="timer"></span>', ""),
+);
 const port = await freePort();
 const origin = `http://127.0.0.1:${port}`;
 // Where the app's routes are: the origin plus the prefix.
@@ -84,6 +100,7 @@ const env = {
   VOTA_DATABASE_PATH: join(dir, "vota.db"),
   VOTA_PUBLIC_BASE_URL: `${origin}${BASE_PATH}`,
   VOTA_DEFAULT_TIME_ZONE: "Europe/Berlin",
+  VOTA_THEME_FOLDER: themes,
 };
 const adminToken = execFileSync(BIN, ["admin-token", "create", "--label", "browser-check"], { env })
   .toString()
@@ -186,8 +203,17 @@ function send(method, params = {}) {
 // Everything the page requests, and every console error or CSP violation.
 const requested = [];
 const problems = [];
-// Voter API calls to answer with a canned response (or fail) instead.
+// Voter API calls to answer with a canned response (or fail, or hold until
+// released) instead: null (pass), "network", "hold", or { status, body,
+// headers }.
 let intercept = null;
+// Every voter API PUT the page sent, in order: { selection, at }.
+const puts = [];
+// Requests held back ("hold"), in order: { requestId, selection }.
+const held = [];
+// JavaScript dialogs the browser opened (e.g. beforeunload).
+const jsDialogs = [];
+let stayOnBeforeUnload = false;
 listeners.push(async (message) => {
   const { method, params } = message;
   if (method === "Network.requestWillBeSent") requested.push(params.request.url);
@@ -204,9 +230,17 @@ listeners.push(async (message) => {
   ) {
     problems.push(params.entry.text);
   }
+  if (method === "Page.javascriptDialogOpening") {
+    jsDialogs.push(params.type);
+    await send("Page.handleJavaScriptDialog", { accept: !(params.type === "beforeunload" && stayOnBeforeUnload) });
+  }
   if (method === "Fetch.requestPaused") {
     const canned = intercept;
-    if (!canned) {
+    const selection = JSON.parse(params.request.postData ?? "{}").option_ids ?? null;
+    puts.push({ selection, at: Date.now() });
+    if (canned === "hold") {
+      held.push({ requestId: params.requestId, selection });
+    } else if (!canned) {
       await send("Fetch.continueRequest", { requestId: params.requestId });
     } else if (canned === "network") {
       await send("Fetch.failRequest", { requestId: params.requestId, errorReason: "InternetDisconnected" });
@@ -214,7 +248,7 @@ listeners.push(async (message) => {
       await send("Fetch.fulfillRequest", {
         requestId: params.requestId,
         responseCode: canned.status,
-        responseHeaders: [{ name: "content-type", value: "application/json" }],
+        responseHeaders: [{ name: "content-type", value: "application/json" }, ...(canned.headers ?? [])],
         body: Buffer.from(JSON.stringify(canned.body)).toString("base64"),
       });
     }
@@ -229,7 +263,9 @@ await send("Fetch.enable", { patterns: [{ urlPattern: "*/api/b/*/response" }] })
 await send("Emulation.setTimezoneOverride", { timezoneId: "America/New_York" });
 
 async function evaluate(expression) {
-  const result = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
+  // As a user gesture: the page gets sticky activation, which browsers
+  // require before they show a beforeunload prompt.
+  const result = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true, userGesture: true });
   if (result.exceptionDetails) throw new Error(`${expression}: ${result.exceptionDetails.text}`);
   return result.result.value;
 }
@@ -263,61 +299,343 @@ const choose = (label) =>
 const clickButton = (text) =>
   evaluate(`[...document.querySelectorAll("button")].find(b => b.textContent.trim() === ${JSON.stringify(text)}).click()`);
 const sameDocument = () => evaluate("window.__sameDocument === true");
+/** The autosave status line: [data-state, its text]. */
+const autosaveStatus = () =>
+  evaluate(`(() => { const b = document.querySelector(".vota-autosave"); return b ? [b.dataset.state, b.querySelector("[role=status]").textContent] : null; })()`);
+const waitForAutosave = (state, timeout) =>
+  waitFor(`autosave ${state}`, async () => (await autosaveStatus())?.[0] === state, timeout);
+/** The save state of the card of the Option with this label. */
+const cardState = (label) =>
+  evaluate(`[...document.querySelectorAll("label")].find(l => l.textContent.trim() === ${JSON.stringify(label)}).closest(".option").dataset.votaSave ?? null`);
+/** Lets the held requests through, oldest first. */
+async function release() {
+  while (held.length) {
+    await send("Fetch.continueRequest", { requestId: held.shift().requestId });
+  }
+}
+const checkedLabels = () =>
+  evaluate(`[...document.querySelectorAll("input[name=option]:checked")].map(i => i.labels[0].textContent.trim()).join(",")`);
+const storedLabels = async (ballot) => {
+  const view = await voterView(ballot.token);
+  return (view.response?.option_ids ?? []).map((id) => ballot.options.find((o) => o.id === id).label).join(",");
+};
+/** Whether leaving now would ask first (a synthetic beforeunload). */
+const wouldWarn = () =>
+  evaluate(`(() => { const e = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; })()`);
+const visible = (selector) => evaluate(`(() => { const n = document.querySelector(${JSON.stringify(selector)}); return !!n && n.getClientRects().length > 0; })()`);
 const waitForReload = () => waitFor("a reload", async () => (await evaluate("window.__sameDocument")) !== true);
 
 try {
-  // --- Editable: local time, countdown, save in place ------------------------
+  // --- Editable: local time, countdown, autosave ---------------------------
   {
     const ballot = await createBallot({ submission_mode: "editable", theme: "dark" });
     await open(`/b/${ballot.token}`);
     const time = await evaluate(`document.querySelector("time").textContent`);
-    check(/(EST|EDT|GMT-[45])/.test(time), "the deadline shows in the voter's time zone", time);
+    check(
+      /^(Today|Tomorrow|(Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d{1,2} [A-Z][a-z]{2}( \d{4})?), \d\d:\d\d$/.test(time),
+      "the deadline shows short and friendly, without a zone",
+      time,
+    );
     const title = await evaluate(`document.querySelector("time").title`);
-    check(/CET|CEST/.test(title), "the server's rendering stays as a tooltip", title);
+    check(/(EST|EDT|GMT-[45])/.test(title), "the precise local deadline, with its zone, is the tooltip", title);
+    check(
+      (await evaluate(`document.querySelector("time").getAttribute("datetime")`)) === ballot.voting_deadline.replace(/\.\d+Z$/, "Z") ||
+        Date.parse(await evaluate(`document.querySelector("time").getAttribute("datetime")`)) === Date.parse(ballot.voting_deadline),
+      "the full instant stays on <time datetime>",
+    );
     const countdown = await evaluate(`document.querySelector(".vota-countdown").textContent`);
-    check(/^\((2 days, 23 hours|3 days, 0 hours) left\)$/.test(countdown), "the countdown shows the remaining time", countdown);
+    check(/^in (2 days, 23 hours|3 days, 0 hours)$/.test(countdown), "the countdown fills the template's placeholder", countdown);
+    check(
+      (await evaluate(`document.querySelectorAll(".vota-countdown").length`)) === 1,
+      "the script adds no countdown of its own",
+    );
+    check(!(await visible('button[type="submit"]')), "an Editable Ballot shows no Submit button");
+    check(
+      (await evaluate(`document.querySelectorAll('button[type="submit"]').length`)) === 1,
+      "the Submit button stays in the page for the no-JS flow",
+    );
+    check((await autosaveStatus())?.[0] === "idle", "the status line says changes are saved automatically", await autosaveStatus());
 
+    const before = puts.length;
     await choose("Sushi");
-    await click('button[type="submit"]');
-    await waitForDialog("saved");
-    check((await dialogText()).includes("Saved ✓"), "saving ends in Saved ✓", await dialogText());
     check(
-      (await evaluate("document.activeElement.textContent")) === "OK",
-      "the Saved dialog's button has focus",
+      (await cardState("Sushi")) === "pending" || (await cardState("Sushi")) === "saved",
+      "the chosen Option is marked at once",
+      await cardState("Sushi"),
     );
-    const saved = await voterView(ballot.token);
-    check(
-      saved.status === "answered" && saved.response.option_ids[0] === ballot.options[1].id,
-      "the Response was recorded through the voter API",
-      saved.response,
-    );
-    await clickButton("OK");
-    await waitFor("the refreshed view", () => evaluate(`!!document.querySelector(".recorded")`));
-    check(await sameDocument(), "the page updates in place, without a reload");
-    check(
-      await evaluate(`document.querySelector("input[value='${ballot.options[1].id}']").checked`),
-      "the form stays, pre-filled with the current answer",
-    );
-    check(
-      (await evaluate(`document.querySelector("button[type=submit]").textContent`)) === "Change answer",
-      "the form offers to change the answer",
-    );
-    check(!!(await evaluate(`document.querySelector(".vota-countdown")`)), "the countdown is back after the update");
-    check(
-      (await evaluate(`document.activeElement.tagName`)) === "H1",
-      "focus moves to the page heading after the update",
-    );
+    await waitForAutosave("saved");
+    check((await autosaveStatus())[1].includes("Saved"), "the status line says Saved", await autosaveStatus());
+    check((await cardState("Sushi")) === "saved", "the saved Option is highlighted as saved", await cardState("Sushi"));
+    check(await dialogState() === null, "autosave opens no dialog");
+    check(puts.length - before === 1, "one change, one request", puts.slice(before));
+    check((await storedLabels(ballot)) === "Sushi", "the Response was recorded through the voter API");
+    await waitFor("the refreshed view", () => evaluate(`document.querySelector(".status")?.dataset.state === "answered"`));
+    check(await sameDocument(), "after the first save the page updates in place, without a reload");
+    check((await autosaveStatus())?.[0] === "saved", "the refreshed page still says Saved", await autosaveStatus());
+    check(!!(await evaluate(`document.querySelector(".vota-countdown").textContent`)), "the countdown is back after the update");
+    await sleep(2300);
+    check((await cardState("Sushi")) === null, "the saved highlight fades", await cardState("Sushi"));
+    check(!(await wouldWarn()), "with everything saved, leaving asks nothing");
 
     // Changing the answer works again in the same document.
     await choose("Tacos");
-    await click('button[type="submit"]');
-    await waitForDialog("saved");
+    await waitForAutosave("saved");
+    await waitFor("stored", async () => (await storedLabels(ballot)) === "Tacos");
+    check(true, "a second change is saved too");
+    check(await sameDocument(), "later saves keep the page");
+  }
+
+  // --- Fast clicks: strictly serialised, coalesced ---------------------------
+  {
+    const ballot = await createBallot({ submission_mode: "editable" });
+    await open(`/b/${ballot.token}`);
+    const before = puts.length;
+    intercept = "hold";
+    await choose("Pizza");
+    await waitFor("the first request", () => held.length === 1);
+    await choose("Sushi");
+    await choose("Tacos");
+    await sleep(300);
+    check(held.length === 1 && puts.length - before === 1, "while a save is in flight nothing else is sent", puts.slice(before));
+    check((await autosaveStatus())[0] === "pending", "the status line says Saving…", await autosaveStatus());
     check(
-      (await voterView(ballot.token)).response.option_ids[0] === ballot.options[2].id,
-      "a second change is saved too",
+      (await cardState("Tacos")) === "pending" && (await checkedLabels()) === "Tacos",
+      "the newest click shows at once, as pending",
     );
+    check(await wouldWarn(), "while a save is pending, leaving asks first");
+    await release();
+    await waitFor("the next request", () => held.length === 1);
+    check(
+      JSON.stringify(puts.slice(before).map((p) => p.selection)) ===
+        JSON.stringify([[ballot.options[0].id], [ballot.options[2].id]]),
+      "the next request carries only the latest selection, after the first finished",
+      puts.slice(before),
+    );
+    check((await autosaveStatus())[0] === "pending", "the first success doesn't say Saved while newer changes are pending");
+    intercept = null;
+    await release();
+    await waitForAutosave("saved");
+    check((await storedLabels(ballot)) === (await checkedLabels()), "the stored Response is what the page shows");
+    check(puts.length - before === 2, "two requests in all", puts.slice(before));
+  }
+
+  // --- Multiple choice: rapid clicks are debounced ------------------------------
+  {
+    const ballot = await createBallot({ submission_mode: "editable", choice_mode: "multiple" });
+    await open(`/b/${ballot.token}`);
+    const before = puts.length;
+    await choose("Pizza");
+    await sleep(100);
+    await choose("Tacos");
+    await waitForAutosave("saved");
+    check(
+      puts.length - before === 1 && puts[before].selection.length === 2,
+      "clicks within the debounce go out as one request",
+      puts.slice(before),
+    );
+    check((await storedLabels(ballot)) === "Pizza,Tacos", "both Options are stored");
+    // Unticking everything can't be sent: the page says so, and keeps the
+    // stored answer.
+    const sent = puts.length;
+    await choose("Pizza");
+    await choose("Tacos");
+    await waitForAutosave("invalid");
+    await sleep(600);
+    check(puts.length === sent, "an empty multiple-choice selection is not sent");
+    check((await cardState("Pizza")) === "failed", "the unticked Options show as not saved", await cardState("Pizza"));
+    check(await wouldWarn(), "an unsaved selection makes leaving ask first");
+    await choose("Tacos");
+    await waitForAutosave("saved");
+    check((await storedLabels(ballot)) === "Tacos", "choosing again saves");
+  }
+
+  // --- Allow No Option: unticking everything saves "no Option" ------------------
+  {
+    const ballot = await createBallot({ submission_mode: "editable", choice_mode: "multiple", allow_no_option: true });
+    await open(`/b/${ballot.token}`);
+    check(
+      (await evaluate(`document.querySelector("legend").textContent.trim()`)) === "Choose any number of options (or none)",
+      "the legend says no Option is fine",
+    );
+    check(await visible('button[type="submit"]'), "without an answer, Save stays to save no Option");
+    await choose("Pizza");
+    await waitForAutosave("saved");
+    const before = puts.length;
+    await choose("Pizza");
+    await waitForAutosave("saved");
+    check(
+      puts.length - before === 1 && puts[before].selection.length === 0,
+      "unticking everything sends the empty selection",
+      puts.slice(before),
+    );
+    const view = await voterView(ballot.token);
+    check(
+      view.status === "answered" && view.response?.option_ids.length === 0,
+      "the empty Response is stored",
+      view,
+    );
+    check(!(await wouldWarn()), "a saved empty selection leaves without asking");
+    check((await cardState("Pizza")) !== "failed", "the unticked Option is not shown as unsaved");
+
+    // A fresh Ballot: Save with nothing ticked records "no Option".
+    const fresh = await createBallot({ submission_mode: "editable", choice_mode: "multiple", allow_no_option: true });
+    await open(`/b/${fresh.token}`);
+    check(!(await wouldWarn()), "an untouched page has nothing unsaved");
+    check((await autosaveStatus())?.[0] === "idle", "an untouched page is idle", await autosaveStatus());
+    const sent = puts.length;
+    await click('button[type="submit"]');
+    await waitForAutosave("saved");
+    check(puts.length - sent === 1 && puts[sent].selection.length === 0, "Save sends the empty selection", puts.slice(sent));
+    check((await voterView(fresh.token)).status === "answered", "Save with nothing ticked answers the Ballot");
+    await waitFor("the page refreshed in place", async () => (await evaluate(`document.querySelector(".status")?.dataset.state`)) === "answered");
+    check(!(await visible('button[type="submit"]')), "once answered, Save is hidden again");
+    check(await sameDocument(), "the page was refreshed in place, not reloaded");
+  }
+
+  // --- Without Allow No Option, ticking and unticking at once is no answer ----------
+  {
+    const ballot = await createBallot({ submission_mode: "editable", choice_mode: "multiple" });
+    await open(`/b/${ballot.token}`);
+    check(!(await visible('button[type="submit"]')), "without Allow No Option, Save is hidden from the start");
+    const before = puts.length;
+    await choose("Pizza");
+    await choose("Pizza");
+    await sleep(600);
+    check(puts.length === before, "an empty selection without a Response sends nothing", puts.slice(before));
+    check((await autosaveStatus())?.[0] === "idle", "and the page stays idle", await autosaveStatus());
+    check(!(await wouldWarn()), "and leaving doesn't ask");
+    check((await voterView(ballot.token)).status === "unanswered", "the Ballot stays unanswered");
+  }
+
+  // --- Allow No Option, Final: the dialog confirms "no Option" ---------------------
+  {
+    const ballot = await createBallot({ choice_mode: "multiple", submission_mode: "final", allow_no_option: true });
+    await open(`/b/${ballot.token}`);
+    await click('button[type="submit"]');
+    await waitForDialog("confirm");
+    check((await dialogText()).includes("You chose no option"), "the dialog confirms no Option", await dialogText());
+    await clickButton("Confirm and submit");
+    await waitForDialog("saved");
+    const view = await voterView(ballot.token);
+    check(view.status === "answered" && view.response?.option_ids.length === 0, "the empty Final Response is stored", view);
     await clickButton("OK");
-    await waitFor("dialog closed", async () => (await dialogState()) === null);
+    await waitFor("the read-only view", async () => (await evaluate(`document.body.innerText`)).includes("You chose no option."));
+  }
+
+  // --- Transient failures are retried ---------------------------------------------
+  {
+    const ballot = await createBallot({ submission_mode: "editable" });
+    await open(`/b/${ballot.token}`);
+    const before = puts.length;
+    intercept = { status: 500, body: { error: "internal" } };
+    await choose("Pizza");
+    await waitForAutosave("failed");
+    const status = await autosaveStatus();
+    check(status[1].includes("Not saved, retrying…"), "a 500 says Not saved, retrying…", status);
+    check((await cardState("Pizza")) === "failed", "the Option shows as not saved", await cardState("Pizza"));
+    check(await visible(".vota-retry"), "Retry now is offered");
+    check(await wouldWarn(), "while a save failed, leaving asks first");
+    await waitFor("an automatic retry", () => puts.length - before >= 2, 3000);
+    check(puts[before + 1].at - puts[before].at >= 900, "the first retry waits about a second", puts[before + 1].at - puts[before].at);
+    intercept = null;
+    await waitForAutosave("saved", 6000);
+    check((await storedLabels(ballot)) === "Pizza", "once the server is back, the retry saves");
+    check((await cardState("Pizza")) === "saved", "and the Option turns saved");
+    check(!(await wouldWarn()), "then leaving asks nothing");
+  }
+  {
+    // 429 with Retry-After: the retry waits; coming back online retries now.
+    const ballot = await createBallot({ submission_mode: "editable" });
+    await open(`/b/${ballot.token}`);
+    const before = puts.length;
+    intercept = { status: 429, body: { error: "too_many_requests" }, headers: [{ name: "Retry-After", value: "30" }] };
+    await choose("Sushi");
+    await waitForAutosave("failed");
+    check((await autosaveStatus())[1].includes("Too many requests"), "429: says why", await autosaveStatus());
+    await sleep(2500);
+    check(puts.length - before === 1, "429: the retry honours Retry-After", puts.slice(before));
+    intercept = null;
+    await evaluate(`window.dispatchEvent(new Event("online"))`);
+    await waitForAutosave("saved", 3000);
+    check((await storedLabels(ballot)) === "Sushi", "coming back online retries at once");
+  }
+  {
+    // A change while a retry waits sends the newest state.
+    const ballot = await createBallot({ submission_mode: "editable" });
+    await open(`/b/${ballot.token}`);
+    const before = puts.length;
+    intercept = "network";
+    await choose("Pizza");
+    await waitForAutosave("failed");
+    check((await autosaveStatus())[1].includes("No connection"), "a network error says so", await autosaveStatus());
+    intercept = null;
+    await choose("Tacos");
+    await waitForAutosave("saved", 3000);
+    check(
+      JSON.stringify(puts.slice(before).map((p) => p.selection)) ===
+        JSON.stringify([[ballot.options[0].id], [ballot.options[2].id]]),
+      "a change while a retry waits sends the newest state, not the stale one",
+      puts.slice(before),
+    );
+    check((await storedLabels(ballot)) === "Tacos", "and stores it");
+  }
+
+  // --- Definitive failures are not retried -----------------------------------------
+  {
+    const ballot = await createBallot({ submission_mode: "editable" });
+    await open(`/b/${ballot.token}`);
+    const before = puts.length;
+    intercept = { status: 422, body: { error: "invalid_input", field: "option_ids[0]", message: "not an Option ID" } };
+    await choose("Pizza");
+    await waitForAutosave("failed");
+    const status = await autosaveStatus();
+    check(
+      status[1].includes("Not saved.") && status[1].includes("Could not save: not an Option ID."),
+      "422: says Not saved, with the reason",
+      status,
+    );
+    await sleep(2500);
+    check(puts.length - before === 1, "422: no automatic retry", puts.slice(before));
+    check((await cardState("Pizza")) === "failed", "422: the Option stays marked as not saved");
+    // Leaving now: the browser asks; the voter stays.
+    stayOnBeforeUnload = true;
+    const dialogs = jsDialogs.length;
+    await send("Page.navigate", { url: `${root}/b/${ballot.token}` }).catch(() => {});
+    await waitFor("the beforeunload prompt", () => jsDialogs.length > dialogs, 3000).catch(() => false);
+    stayOnBeforeUnload = false;
+    check(jsDialogs[dialogs] === "beforeunload", "leaving with a failed save asks for confirmation", jsDialogs.slice(dialogs));
+    await sleep(300);
+    check(await sameDocument(), "staying keeps the page");
+    intercept = null;
+    await clickButton("Retry now");
+    await waitForAutosave("saved");
+    check((await storedLabels(ballot)) === "Pizza", "Retry now saves");
+  }
+
+  // --- 409/404 while autosaving: a dialog, then a reload -------------------------------
+  const conflicts = [
+    { body: { error: "voting_closed" }, status: 409, text: "Voting has closed." },
+    { body: { error: "already_answered" }, status: 409, text: "already been answered" },
+    { body: { error: "ballot_changed" }, status: 409, text: "changed by its organiser" },
+    { body: { error: "not_found" }, status: 404, text: "could not be found" },
+  ];
+  for (const forced of conflicts) {
+    const name = `autosave ${forced.status} ${forced.body.error}`;
+    const ballot = await createBallot({ submission_mode: "editable" });
+    await open(`/b/${ballot.token}`);
+    const before = puts.length;
+    intercept = { status: forced.status, body: forced.body };
+    await choose("Pizza");
+    await waitForDialog("error");
+    intercept = null;
+    const text = await dialogText();
+    check(text.includes(forced.text), `${name}: says "${forced.text}"`, text);
+    await sleep(1500);
+    check(puts.length - before === 1, `${name}: not retried`);
+    const dialogs = jsDialogs.length;
+    await clickButton("Reload the page");
+    await waitForReload();
+    check(jsDialogs.length === dialogs, `${name}: reloads the page without a leave prompt`, jsDialogs.slice(dialogs));
   }
 
   // --- An accent colour: the in-place refresh keeps to the policy -------------
@@ -328,10 +646,7 @@ try {
     await open(`/b/${ballot.token}`);
     const before = problems.length;
     await choose("Pizza");
-    await click('button[type="submit"]');
-    await waitForDialog("saved");
-    await clickButton("OK");
-    await waitFor("the refreshed view", () => evaluate(`!!document.querySelector(".recorded")`));
+    await waitFor("the refreshed view", () => evaluate(`document.querySelector(".status")?.dataset.state === "answered"`));
     check(await sameDocument(), "an accent colour: the page updates in place");
     const accent = await evaluate(`getComputedStyle(document.documentElement).getPropertyValue("--accent").trim()`);
     check(accent === "#aa3300", "an accent colour: it still applies after the update", accent);
@@ -343,7 +658,12 @@ try {
   {
     const ballot = await createBallot({ submission_mode: "final", theme: "minimal" });
     await open(`/b/${ballot.token}`);
+    check(await visible('button[type="submit"]'), "a Final Ballot keeps its Submit button");
+    check((await evaluate(`document.querySelector(".vota-autosave")`)) === null, "a Final Ballot is not autosaved");
+    const before = puts.length;
     await choose("Pizza");
+    await sleep(600);
+    check(puts.length === before, "choosing on a Final Ballot sends nothing yet");
     await click('button[type="submit"]');
     await waitForDialog("confirm");
     const text = await dialogText();
@@ -371,6 +691,8 @@ try {
     await waitForDialog("confirm");
     await clickButton("Confirm and submit");
     await waitForDialog("saved");
+    check((await dialogText()).includes("Saved ✓"), "saving ends in Saved ✓", await dialogText());
+    check((await evaluate("document.activeElement.textContent")) === "OK", "the Saved dialog's button has focus");
     check((await voterView(ballot.token)).status === "answered", "confirming records the Response");
     await clickButton("OK");
     await waitFor("the read-only view", () => evaluate(`!document.querySelector("form")`));
@@ -379,11 +701,12 @@ try {
       (await evaluate(`document.querySelector(".recorded")?.textContent`)) === "Your answer has been recorded.",
       "the page shows the recorded answer",
     );
+    check((await evaluate(`document.activeElement.tagName`)) === "H1", "focus moves to the page heading after the update");
   }
 
-  // --- Nothing selected ----------------------------------------------------------
+  // --- Final: nothing selected ----------------------------------------------------------
   {
-    const ballot = await createBallot({ choice_mode: "multiple", submission_mode: "editable", theme: "classic" });
+    const ballot = await createBallot({ choice_mode: "multiple", submission_mode: "final", theme: "classic" });
     await open(`/b/${ballot.token}`);
     const before = requested.length;
     await click('button[type="submit"]');
@@ -393,14 +716,15 @@ try {
     // Dialog styles follow the Theme's custom properties.
     const colours = await evaluate(`(() => {
       const s = getComputedStyle(document.querySelector("dialog.vota-dialog"));
-      return [s.backgroundColor, s.color, s.borderTopColor, s.animationName];
+      return [s.backgroundColor, s.color, s.animationName];
     })()`);
     check(
-      colours[0] === "rgb(255, 255, 255)" && colours[1] === "rgb(28, 36, 48)",
+      colours[0] === (await evaluate(`getComputedStyle(document.querySelector("main")).backgroundColor`)) &&
+        colours[1] === (await evaluate(`getComputedStyle(document.body).color`)),
       "the dialog uses the Theme's surface and text colours",
       colours,
     );
-    check(colours[3] === "vota-dialog-in", "the dialog animates in by default", colours[3]);
+    check(colours[2] === "vota-dialog-in", "the dialog animates in by default", colours[2]);
     await clickButton("OK");
 
     await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
@@ -414,7 +738,7 @@ try {
     await send("Emulation.setEmulatedMedia", { features: [] });
   }
 
-  // --- Error codes (the voter API's answer forced) -----------------------------------
+  // --- Final: error codes (the voter API's answer forced) ------------------------------
   const cases = [
     { body: { error: "voting_closed" }, status: 409, text: "Voting has closed.", reloads: true },
     { body: { error: "already_answered" }, status: 409, text: "already been answered", reloads: true },
@@ -430,12 +754,14 @@ try {
     { network: true, text: "Could not save, check your connection.", reloads: false },
   ];
   for (const forced of cases) {
-    const name = forced.network ? "network error" : `${forced.status} ${forced.body.error}`;
-    const ballot = await createBallot({ submission_mode: "editable" });
+    const name = `Final, ${forced.network ? "network error" : `${forced.status} ${forced.body.error}`}`;
+    const ballot = await createBallot({ submission_mode: "final" });
     await open(`/b/${ballot.token}`);
     intercept = forced.network ? "network" : { status: forced.status, body: forced.body };
     await choose("Pizza");
     await click('button[type="submit"]');
+    await waitForDialog("confirm");
+    await clickButton("Confirm and submit");
     await waitForDialog("error");
     intercept = null;
     const text = await dialogText();
@@ -461,7 +787,6 @@ try {
     await open(`/b/${ballot.token}`);
     await replaceOptions(ballot, ["Curry", "Soup"]);
     await choose("Pizza");
-    await click('button[type="submit"]');
     await waitForDialog("error");
     const text = await dialogText();
     check(
@@ -482,8 +807,8 @@ try {
     await open(`/b/${ballot.token}`);
     await retitle(ballot, "Do you REJECT proposal X?");
     await choose("Pizza");
-    await click('button[type="submit"]');
     if (submission_mode === "final") {
+      await click('button[type="submit"]');
       await waitForDialog("confirm");
       await clickButton("Confirm and submit");
     }
@@ -504,49 +829,57 @@ try {
     check(heading === "Do you REJECT proposal X?", `${submission_mode}: the reload shows the new wording`, heading);
     // The reloaded page carries the new revision: saving now works.
     await choose("Sushi");
-    await click('button[type="submit"]');
     if (submission_mode === "final") {
+      await click('button[type="submit"]');
       await waitForDialog("confirm");
       await clickButton("Confirm and submit");
+      await waitForDialog("saved");
+      await clickButton("OK");
+      await waitFor("dialog closed", async () => (await dialogState()) === null);
+    } else {
+      await waitForAutosave("saved");
     }
-    await waitForDialog("saved");
     const saved = await voterView(ballot.token);
     check(
       saved.status === "answered" && saved.response.option_ids[0] === ballot.options[1].id,
       `${submission_mode}: after the reload the answer is saved`,
       saved,
     );
-    await clickButton("OK");
-    await waitFor("dialog closed", async () => (await dialogState()) === null);
   }
 
   // --- The countdown reaching zero ---------------------------------------------------
-  {
+  for (const theme of ["classic", "bare"]) {
     const ballot = await createBallot({
       submission_mode: "editable",
+      theme,
       voting_deadline: new Date(Date.now() + 6000).toISOString(),
     });
     await open(`/b/${ballot.token}`);
-    const countdown = await evaluate(`document.querySelector(".vota-countdown").textContent`);
-    check(/^\(\d seconds? left\)$/.test(countdown), "near the deadline the countdown counts seconds", countdown);
-    await waitFor("closing", () => evaluate(`document.querySelector(".vota-countdown").textContent === "Voting has closed."`), 10000);
+    if (theme === "classic") {
+      const countdown = await evaluate(`document.querySelector(".vota-countdown").textContent`);
+      check(/^in \d seconds?$/.test(countdown), "near the deadline the countdown counts seconds", countdown);
+      await waitFor("closing", () => evaluate(`document.querySelector(".vota-countdown").textContent === "Voting has closed."`), 10000);
+    } else {
+      check((await evaluate(`document.querySelector(".vota-countdown")`)) === null, "bare: a template without a placeholder gets no countdown");
+      await waitFor("closing", () => evaluate(`[...document.querySelector("form").elements].every(e => e.disabled)`), 10000);
+    }
     check(
       await evaluate(`[...document.querySelector("form").elements].every(e => e.disabled)`),
-      "at the deadline the form is disabled",
+      `${theme}: at the deadline the form is disabled`,
     );
     check(
       (await evaluate(`document.querySelector("[aria-live].vota-visually-hidden").textContent`)) === "Voting has closed.",
-      "the closing is announced",
+      `${theme}: the closing is announced`,
     );
     await waitForReload();
     await waitFor("closed view", () => evaluate(`!!document.querySelector(".closed")`));
     check(
-      (await evaluate(`document.querySelector(".closed").textContent`)) === "Voting closed. No answer was given.",
-      "then the page reloads to the closed view",
+      (await evaluate(`document.querySelector(".closed").textContent`)) === "No answer was given.",
+      `${theme}: then the page reloads to the closed view`,
     );
     await evaluate("window.__sameDocument = true");
     await sleep(2500);
-    check(await sameDocument(), "the closed view stays (no reload loop)");
+    check(await sameDocument(), `${theme}: the closed view stays (no reload loop)`);
   }
 
   // --- Without JavaScript --------------------------------------------------------------
@@ -555,7 +888,8 @@ try {
     const ballot = await createBallot({ submission_mode: "final" });
     await open(`/b/${ballot.token}`);
     check(
-      (await evaluate(`document.querySelector(".vota-countdown, dialog")`)) === null,
+      (await evaluate(`document.querySelector(".vota-autosave, dialog")`)) === null &&
+        (await evaluate(`document.querySelector(".vota-countdown").textContent`)) === "",
       "without JavaScript the page is the plain form",
     );
     await choose("Sushi");
@@ -575,6 +909,21 @@ try {
       "confirming redirects to the read-only page",
     );
     check((await voterView(ballot.token)).status === "answered", "without JavaScript the Response is recorded");
+
+    // Editable: the Submit button is there and posts.
+    const editable = await createBallot({ submission_mode: "editable" });
+    await open(`/b/${editable.token}`);
+    check(await visible('button[type="submit"]'), "without JavaScript an Editable Ballot shows its Submit button");
+    await choose("Tacos");
+    loaded = waitForLoad();
+    await clickButton("Save answer");
+    await loaded;
+    check(
+      (await evaluate(`location.pathname`)) === `${PREFIX}/b/${editable.token}` &&
+        (await evaluate(`document.querySelector(".status").dataset.state`)) === "answered",
+      "without JavaScript saving redirects to the page, now answered",
+    );
+    check((await storedLabels(editable)) === "Tacos", "without JavaScript the Editable Response is recorded");
 
     // The admin replaced the Options while the plain form was open.
     const changed = await createBallot({ submission_mode: "final" });
@@ -623,14 +972,23 @@ try {
     await send("Emulation.setScriptExecutionDisabled", { value: false });
   }
 
+  // --- The modules ---------------------------------------------------------------------
+  const modules = ["main", "config", "dom", "time", "api", "dialog", "autosave", "refresh"];
+  const version = requested
+    .map((url) => url.slice(root.length).match(/^\/assets\/app\/([0-9a-f]{16})\/main\.js$/))
+    .find(Boolean)?.[1];
+  check(!!version, "the entry module loads from the content-versioned directory on our own host");
   check(
-    requested.some((url) => /^\/assets\/app\/ballot\.js\?v=[0-9a-f]{16}$/.test(url.slice(root.length)) && url.startsWith(root)) &&
-      requested.some((url) => /^\/assets\/app\/ballot\.css\?v=[0-9a-f]{16}$/.test(url.slice(root.length)) && url.startsWith(root)),
-    "the script and its stylesheet load from our own host, by content version",
+    modules.every((name) => requested.includes(`${root}/assets/app/${version}/${name}.js`)),
+    "every module loads from the same versioned directory (relative imports)",
+    requested.filter((url) => url.includes("/assets/app/")),
   );
-  const script = requested.find((url) => url.startsWith(`${root}/assets/app/ballot.js?v=`));
-  const cacheControl = script && (await fetch(script)).headers.get("cache-control");
-  check(cacheControl === "public, max-age=31536000, immutable", "the versioned script is cached for good", cacheControl);
+  check(
+    requested.some((url) => /^\/assets\/app\/ballot\.css\?v=[0-9a-f]{16}$/.test(url.slice(root.length)) && url.startsWith(root)),
+    "the stylesheet loads from our own host, by content version",
+  );
+  const cacheControl = (await fetch(`${root}/assets/app/${version}/autosave.js`)).headers.get("cache-control");
+  check(cacheControl === "public, max-age=31536000, immutable", "the versioned modules are cached for good", cacheControl);
   check(problems.length === 0, "no console errors or CSP violations", problems);
   // The harness itself notices a CSP violation (an inline script).
   await evaluate(`document.head.appendChild(document.createElement("script")).textContent = "window.__inline = 1"`);

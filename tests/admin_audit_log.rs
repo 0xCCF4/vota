@@ -258,3 +258,49 @@ async fn a_nat64_client_is_logged_as_its_ipv4_address() {
     assert_eq!(events.len(), 1, "{logs}");
     assert!(events[0].contains(" client_ip=198.51.100.7"), "{logs}");
 }
+
+#[tokio::test]
+async fn the_audit_log_names_a_file_token_by_its_position_in_the_list() {
+    const FILE_TOKEN: &str = "vta_q2bKIu0bSWsRCnMyOt3nfdk9hTaZpjk7Xx9bt7v1uvY";
+    let other = "vta_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    let dir = tempfile::tempdir().unwrap();
+    let (first, second) = (dir.path().join("first"), dir.path().join("second"));
+    std::fs::write(&first, format!("{other}\n")).unwrap();
+    std::fs::write(&second, format!("{FILE_TOKEN}\n")).unwrap();
+    let app = TestApp::with_config(|config| config.admin_token_files = vec![first, second]).await;
+    let stored = app.admin_token().await;
+    let logs = CapturedLogs::default();
+    let guard = logs.start();
+
+    assert_eq!(
+        admin_request(&app, "192.0.2.7", "GET", "/admin/ballots", FILE_TOKEN, None)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        admin_request(&app, "192.0.2.7", "GET", "/admin/ballots", other, None)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        admin_request(&app, "192.0.2.7", "GET", "/admin/ballots", &stored, None)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+
+    drop(guard);
+    let logs = logs.text();
+    let events = request_events(&logs);
+    assert_eq!(events.len(), 3, "{logs}");
+    assert!(events[0].contains("token_id=file:2"), "{logs}");
+    assert!(events[1].contains("token_id=file:1"), "{logs}");
+    // A stored token keeps its plain ID, as `admin-token list` shows it.
+    assert!(events[2].contains("token_id=1 "), "{logs}");
+    for secret in [FILE_TOKEN, other, &stored] {
+        assert!(!logs.contains(secret), "{logs}");
+        assert!(!logs.contains(&secret[4..]), "{logs}");
+    }
+}

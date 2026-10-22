@@ -6,7 +6,7 @@ Vota reads its configuration in three layers. Each later layer overrides the ear
 2. a TOML file, if one is given with `--config <FILE>` or `VOTA_CONFIG=<FILE>`;
 3. environment variables `VOTA_<OPTION>`.
 
-Every server command (`serve` and `admin-token …`) loads the configuration the same way. The admin API client [`ballot …`](cli.md#ballot) and [`completions`](cli.md#completions) load none: they ignore `--config` and `VOTA_CONFIG`. No option holds a secret: Admin Tokens live in the database (see [Admin Tokens](../concepts/admin-tokens.md)).
+Every server command (`serve` and `admin-token …`) loads the configuration the same way. The admin API client [`ballot …`](cli.md#ballot) and [`completions`](cli.md#completions) load none: they ignore `--config` and `VOTA_CONFIG`. No option holds a secret: Admin Tokens live in the database, or in files that [`admin_token_files`](#admin_token_files) names (see [Admin Tokens](../concepts/admin-tokens.md)).
 
 ## Environment variables
 
@@ -16,6 +16,7 @@ The variable name is `VOTA_` plus the option name in upper case: `port` → `VOT
 VOTA_PORT=9000
 VOTA_DEFAULT_PURGE_GAP="2 weeks"
 VOTA_TRUSTED_PROXIES='["127.0.0.1/32", "10.0.0.0/8"]'
+VOTA_ADMIN_TOKEN_FILES='["/run/agenix/vota-admin-token"]'
 VOTA_RATE_LIMIT__FAILED_LOOKUPS=5
 VOTA_RATE_LIMIT__WINDOW=30m
 VOTA_CONNECTIONS__MAX_OPEN=256
@@ -35,7 +36,7 @@ Logs go to stderr; stdout carries only command output, such as a new Admin Token
 
 ## NixOS module
 
-On NixOS, the [`services.vota` module](../guides/deployment.md#nixos) writes the config file from `services.vota.settings`: every option below is `services.vota.settings.<option>` with the same name, type and default (the **NixOS** row of each option), e.g. `services.vota.settings.rate_limit.window = "30m";`. Two defaults differ: `public_base_url` has none and must be set, and `database_path` defaults to `/var/lib/vota/vota.db` in the service's state directory. Options left at `null` (`theme_folder`, `logo_folder`) are left out of the file. The module sets no `VOTA_*` environment variables (only `NO_COLOR=1`).
+On NixOS, the [`services.vota` module](../guides/deployment.md#nixos) writes the config file from `services.vota.settings`: every option below is `services.vota.settings.<option>` with the same name, type and default (the **NixOS** row of each option), e.g. `services.vota.settings.rate_limit.window = "30m";`. Three defaults differ: `public_base_url` has none and must be set, `database_path` defaults to `/var/lib/vota/vota.db` in the service's state directory, and `default_time_zone` defaults to the system's `time.timeZone` (`UTC` when that is `null`, i.e. when the zone is set imperatively with `timedatectl`). Options left at `null` (`theme_folder`, `logo_folder`) are left out of the file. `admin_token_files` is the exception: it is set through `services.vota.adminTokenFiles`, which passes the files in as systemd credentials and sets `VOTA_ADMIN_TOKEN_FILES` (see [`admin_token_files`](#admin_token_files)); `services.vota.settings.admin_token_files` is refused. Otherwise the module sets no `VOTA_*` environment variables (only `NO_COLOR=1`).
 
 ## Example file
 
@@ -53,6 +54,7 @@ max_date_horizon = "1y"
 default_time_zone = "Europe/Berlin"
 trusted_proxies = ["127.0.0.1/32", "::1/128"]
 nat64_prefixes = []
+admin_token_files = []
 
 [rate_limit]
 failed_lookups = 20
@@ -66,7 +68,7 @@ header_read_timeout = "10s"
 shutdown_grace_period = "10s"
 ```
 
-Relative paths (`database_path`, `theme_folder`, `logo_folder`) are resolved against the **working directory of the process**, not against the config file's location.
+Relative paths (`database_path`, `theme_folder`, `logo_folder`, `admin_token_files`) are resolved against the **working directory of the process**, not against the config file's location.
 
 Durations use [humantime](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) syntax: `30m`, `1h`, `12h`, `4weeks`, `2 weeks`, `90days`, `1y` (365.25 days), `1y 6months`.
 
@@ -187,12 +189,17 @@ How far ahead of now an admin may set a Voting Deadline or Purge Date, on create
 | | |
 | --- | --- |
 | Env | `VOTA_DEFAULT_TIME_ZONE` |
-| NixOS | `services.vota.settings.default_time_zone` |
+| NixOS | `services.vota.settings.default_time_zone` (default: the system's `time.timeZone`, or `UTC` when that is unset) |
 | Type | IANA time zone name |
 | Default | `UTC` |
 | Example | `default_time_zone = "Europe/Berlin"` |
 
-The zone the voting page uses to show the Voting Deadline without JavaScript, e.g. `Tuesday, 1 December 2026, 13:00 CET`. With JavaScript, the page shows the voter's local time instead. The APIs always use UTC.
+The server's local time zone, for two things:
+
+- The voting page shows the Voting Deadline in it without JavaScript, e.g. `Tue 1 Dec 2026, 13:00 CET`. With JavaScript, the page shows the voter's local time instead, without a zone name (e.g. `Tomorrow, 13:00`).
+- The admin API reads a Voting Deadline or Purge Date given **without** a UTC offset (`2026-12-01T12:00`) as local time in it; one with an offset is read as given. A local time skipped or repeated by a daylight-saving change is refused. See [Conventions](admin-api.md#conventions).
+
+The APIs' answers are always in UTC. On NixOS the module's default is the system's zone instead of `UTC` (see [NixOS module](#nixos-module)).
 
 ### `trusted_proxies`
 
@@ -276,13 +283,32 @@ shutdown_grace_period = "10s"
 
 Only HTTP/1.1 is served (no HTTP/2), with at most 100 headers and about 400 KB of them per request.
 
+### `admin_token_files`
+
+| | |
+| --- | --- |
+| Env | `VOTA_ADMIN_TOKEN_FILES` |
+| NixOS | `services.vota.adminTokenFiles` (not under `settings`; see below) |
+| Type | list of file paths |
+| Default | `[]` (only the database's Admin Tokens) |
+| Example | `admin_token_files = ["/run/credentials/vota.service/admin-token"]` |
+
+Files that each hold one pre-provisioned [Admin Token](../concepts/admin-tokens.md#admin-tokens-from-files), for a host that provisions its secrets declaratively (e.g. agenix or sops-nix). The admin API accepts these tokens beside the ones `vota admin-token create` stores. Make one with [`vota admin-token generate`](cli.md#admin-token-generate).
+
+- **Format**: the file holds exactly one Admin Token, `vta_` and 43 base64url characters, as `generate` prints it. Surrounding whitespace, such as the trailing newline, is trimmed; anything else (a second token, a comment, `=` padding), or more than 4 KiB in all, makes the file malformed.
+- **When read**: once, when `serve` starts; only the SHA-256 hash of each token is kept in memory. A changed file takes effect at the next start, and removing a file from the list revokes its token at the next start. The `admin-token` commands never read the files.
+- **Errors**: a missing, unreadable or malformed file stops `serve` with exit code 1 and an error that names the file but never its contents (see [Startup errors](#startup-errors)).
+- **Not in the database**: `admin-token list` doesn't show these tokens and `admin-token revoke` can't revoke them. They have no label, no expiry and no recorded last use. The [audit log](admin-api.md#audit-log) names the token of the n-th file (counted from 1) as `token_id=file:<n>`.
+- **In the environment**, a list in brackets. Quote entries that hold `,`, `[`, `]` or spaces; others may stay unquoted, as the NixOS module passes them (`VOTA_ADMIN_TOKEN_FILES=[%d/vota-admin-token-1]`, with systemd's credentials directory for `%d`). A single path without brackets is refused (`expected a sequence`).
+- **Permissions**: the file must be readable by the server's user and by nobody else. Under systemd, pass a root-only secret in with `LoadCredential=` and name the file in the credentials directory (`$CREDENTIALS_DIRECTORY`, `/run/credentials/<unit>/`); the NixOS option `services.vota.adminTokenFiles` does this for you. See [Deployment: NixOS](../guides/deployment.md#admin-tokens-from-files-agenix).
+
 ## Startup errors
 
 Configuration problems stop every command with exit code 1 and a message naming the key: an unknown key in the config file, or an invalid value in the file or in a known environment variable. (Unknown environment variables only log a warning; see [Environment variables](#environment-variables).) Real examples:
 
 ```text
 Error: config file nope.toml not found
-Error: unknown field: found `foo`, expected `one of `bind_address`, `port`, `database_path`, `public_base_url`, `theme_folder`, `logo_folder`, `default_purge_gap`, `purge_interval`, `max_date_horizon`, `default_time_zone`, `trusted_proxies`, `nat64_prefixes`, `rate_limit`, `connections`` for key "default.foo" in t.toml TOML file
+Error: unknown field: found `foo`, expected `one of `bind_address`, `port`, `database_path`, `public_base_url`, `theme_folder`, `logo_folder`, `default_purge_gap`, `purge_interval`, `max_date_horizon`, `default_time_zone`, `trusted_proxies`, `nat64_prefixes`, `rate_limit`, `connections`, `admin_token_files`` for key "default.foo" in t.toml TOML file
 Error: invalid IP address syntax for key "default.trusted_proxies.0" in t.toml TOML file
 Error: a NAT64 prefix must be an IPv6 prefix, not an IPv4 network: "10.0.0.0/8" for key "default.nat64_prefixes.0" in t.toml TOML file
 Error: invalid type: found string "127.0.0.1/32", expected a sequence for key "TRUSTED_PROXIES" in `VOTA_` environment variable(s)
@@ -302,4 +328,17 @@ Error: invalid value unsigned int `0`, expected a nonzero u32 for key "CONNECTIO
 Error: connections.header_read_timeout must be longer than zero
 ```
 
-A theme or logo folder that is missing or broken (e.g. `Error: reading the theme folder /nonexistent`) stops only `serve`. The `admin-token` commands don't read these folders. Theme and logo errors are listed in the [Themes and logos guide](../guides/themes-and-logos.md#startup-checks-and-errors).
+A theme or logo folder that is missing or broken (e.g. `Error: reading the theme folder /nonexistent`) stops only `serve`, and so does an Admin Token file of [`admin_token_files`](#admin_token_files) that is missing, unreadable or malformed. The `admin-token` commands read neither. Real examples (the cause on the following lines; never the file's contents):
+
+```text
+Error: admin_token_files: cannot read the Admin Token file /run/agenix/missing
+
+Caused by:
+    No such file or directory (os error 2)
+Error: admin_token_files: the Admin Token file /etc/vota/admin-token is malformed
+
+Caused by:
+    it must hold exactly one Admin Token: vta_ and 43 base64url characters, as `vota admin-token generate` prints it
+```
+
+Theme and logo errors are listed in the [Themes and logos guide](../guides/themes-and-logos.md#startup-checks-and-errors).

@@ -1,6 +1,7 @@
 //! Theme stylesheets and logos, served from our own host under fixed routes
-//! and looked up by registry name only, and the voting page's script and its
-//! stylesheet (embedded in the binary, referenced by content version). Not
+//! and looked up by registry name only, and the voting page's script modules
+//! and their stylesheet (embedded in the binary, referenced by content
+//! version). Not
 //! Ballot Token routes: an unknown asset is a plain 404 that doesn't count
 //! toward the rate limit.
 
@@ -14,7 +15,7 @@ use untrusted_value::UntrustedValue;
 
 use super::logos::LogoKind;
 use crate::AppState;
-use crate::input::{self, AssetNamePath, AssetQuery};
+use crate::input::{self, AppModulePath, AssetNamePath, AssetQuery};
 
 /// How long browsers may cache an asset. Assets change only on a restart.
 const CACHE_CONTROL: &str = "public, max-age=3600";
@@ -27,20 +28,26 @@ pub(super) fn router() -> Router<AppState> {
     Router::new()
         .route("/assets/themes/{name}/style.css", get(stylesheet))
         .route("/assets/logos/{name}", get(logo))
-        .route(super::enhancement::SCRIPT_PATH, get(script))
+        .route(
+            &format!("{}/{{version}}/{{file}}", super::enhancement::MODULES_DIR),
+            get(script_module),
+        )
         .route(super::enhancement::STYLESHEET_PATH, get(script_stylesheet))
 }
 
-/// `GET /assets/app/ballot.js`: the voting page's script. Cached for good
-/// under its current version (`?v=…`, as the pages reference it); without
-/// it or with another, the current script is cached briefly.
-async fn script(AssetQuery(query): AssetQuery) -> Response {
-    app_asset(
-        "text/javascript; charset=utf-8",
-        super::enhancement::SCRIPT,
-        &super::enhancement::SCRIPT_VERSION,
-        query,
-    )
+/// `GET /assets/app/{version}/{file}`: one of the voting page's script
+/// modules. Cached for good under the modules' current version (as the
+/// pages load them); under any other version, the current module is cached
+/// briefly. An unknown file is a plain 404.
+async fn script_module(AppModulePath { version, file }: AppModulePath) -> Response {
+    let Some(name) = input::app_module(file, &super::enhancement::MODULES) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Some(content) = super::enhancement::module(name) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let current = input::is_current_version_segment(version, &super::enhancement::MODULES_VERSION);
+    versioned_asset("text/javascript; charset=utf-8", content, current)
 }
 
 /// `GET /assets/app/ballot.css`: the styles of what the script adds to the
@@ -62,12 +69,22 @@ fn app_asset(
     version: &str,
     query: UntrustedValue<String>,
 ) -> Response {
+    versioned_asset(
+        content_type,
+        content,
+        input::is_current_version(query, version),
+    )
+}
+
+/// An app asset, cached for good if it was asked for under its `current`
+/// version.
+fn versioned_asset(content_type: &'static str, content: &'static str, current: bool) -> Response {
     let mut response = asset(
         content_type,
         NOTHING_ALLOWED,
         Bytes::from_static(content.as_bytes()),
     );
-    if input::is_current_version(query, version) {
+    if current {
         response.headers_mut().insert(
             header::CACHE_CONTROL,
             HeaderValue::from_static(CACHE_FOREVER),
