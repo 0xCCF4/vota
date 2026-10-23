@@ -4,7 +4,8 @@
 
 use serde_json::Value;
 
-use super::printable;
+use super::csv;
+use super::{printable, printable_lines};
 
 /// The string at `key`, escaped; `-` when it is `null` or missing.
 pub(super) fn text(value: &Value, key: &str) -> String {
@@ -200,4 +201,124 @@ pub(super) fn table(list: &Value) -> String {
             line.trim_end().to_owned() + "\n"
         })
         .collect()
+}
+
+/// The string at `key` for a CSV cell, escaped like [`printable_lines`];
+/// empty when it is `null` or missing.
+fn csv_text(value: &Value, key: &str) -> String {
+    match value.get(key) {
+        Some(Value::String(text)) => printable_lines(text),
+        Some(Value::Null) | None => String::new(),
+        Some(other) => printable_lines(&other.to_string()),
+    }
+}
+
+/// The columns of the list's CSV: the admin view's fields of the same name,
+/// then the result's labels and source.
+const LIST_COLUMNS: [&str; 10] = [
+    "id",
+    "status",
+    "group",
+    "voter_reference",
+    "voting_deadline",
+    "purge_date",
+    "choice_mode",
+    "submission_mode",
+    "result",
+    "result_source",
+];
+
+/// The list as CSV: one record per Ballot. `result` is the result's labels
+/// joined by `; ` (empty without a result, and for an answer of no Option);
+/// `result_source` is `answered`, `fallback` or empty. No URLs or Ballot
+/// Tokens.
+pub(super) fn list_csv(list: &Value) -> String {
+    let rows = (list["ballots"].as_array().into_iter().flatten()).map(|ballot| {
+        let (labels, source) = match ballot.get("result") {
+            Some(result) if result.is_object() => {
+                let labels: Vec<String> = (result["options"].as_array().into_iter().flatten())
+                    .map(|option| csv_text(option, "label"))
+                    .collect();
+                let source = match result["source"].as_str() {
+                    Some("response") => "answered".to_owned(),
+                    _ => csv_text(result, "source"),
+                };
+                (labels.join("; "), source)
+            }
+            _ => (String::new(), String::new()),
+        };
+        let fields = &LIST_COLUMNS[..LIST_COLUMNS.len() - 2];
+        let mut row: Vec<String> = fields.iter().map(|key| csv_text(ballot, key)).collect();
+        row.extend([labels, source]);
+        row
+    });
+    csv::document(&LIST_COLUMNS, rows)
+}
+
+/// The Ballots of a bulk create as a table: VOTER-REFERENCE, ID and URL.
+pub(super) fn created_table(answer: &Value) -> String {
+    let rows: Vec<[String; 3]> = (answer["ballots"].as_array().into_iter().flatten())
+        .map(|ballot| {
+            [
+                text(ballot, "voter_reference"),
+                text(ballot, "id"),
+                text(ballot, "url"),
+            ]
+        })
+        .collect();
+    let header = ["VOTER-REFERENCE", "ID", "URL"].map(String::from);
+    let mut widths = header.each_ref().map(|cell| cell.chars().count());
+    for row in &rows {
+        for (width, cell) in widths.iter_mut().zip(row) {
+            *width = (*width).max(cell.chars().count());
+        }
+    }
+    std::iter::once(&header)
+        .chain(&rows)
+        .map(|row| {
+            format!(
+                "{:<w0$}  {:<w1$}  {}\n",
+                row[0],
+                row[1],
+                row[2],
+                w0 = widths[0],
+                w1 = widths[1]
+            )
+        })
+        .collect()
+}
+
+/// The summary of a bulk create, for stderr: how many, the shared title,
+/// Group and dates.
+pub(super) fn created_many(answer: &Value) -> String {
+    let ballots = answer["ballots"].as_array().cloned().unwrap_or_default();
+    let first = ballots.first().cloned().unwrap_or_default();
+    format!(
+        "Created {} Ballots: {}\n{}",
+        ballots.len(),
+        text(&first, "title"),
+        lines(&[
+            ("Group", text(&first, "group")),
+            ("Voting Deadline", text(&first, "voting_deadline")),
+            ("Purge Date", text(&first, "purge_date")),
+        ])
+    )
+}
+
+/// The columns of a create's CSV.
+const CREATED_COLUMNS: [&str; 3] = ["voter_reference", "id", "url"];
+
+/// The Ballots of a create answer (a bulk answer's `ballots`, or the single
+/// Ballot) as CSV: `voter_reference,id,url`, one record per Ballot. Cells
+/// are escaped by [`csv_text`] and written by [`csv::document`], like the
+/// list's CSV.
+pub(super) fn created_csv(answer: &Value) -> String {
+    let ballots: Vec<&Value> = match answer.get("ballots").and_then(Value::as_array) {
+        Some(ballots) => ballots.iter().collect(),
+        None => vec![answer],
+    };
+    let rows = ballots
+        .into_iter()
+        .map(|ballot| CREATED_COLUMNS.map(|key| csv_text(ballot, key)));
+    csv::document(&CREATED_COLUMNS, rows)
 }

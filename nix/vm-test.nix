@@ -349,6 +349,51 @@ pkgs.testers.runNixOSTest {
         assert "restarting vota.service" in checks, checks
         create_ballot(token)
 
+    def checks():
+        return machine.succeed("journalctl -u vota-health-check.service -o cat --no-pager")
+
+    with subtest("a check that probed a service stopped and started meanwhile leaves it alone"):
+        # The race behind a once flaky check above: a check whose probes
+        # failed because the service was being stopped on purpose must not
+        # restart the run started after that. Here the check probes a frozen
+        # service; it is stopped after the first failed probe and started
+        # again after the last one, while the check waits 2 seconds before
+        # deciding. Only this check runs: the timer is stopped (starting
+        # the service starts it again).
+        machine.succeed("systemctl stop vota-health-check.timer")
+        stops = journal().count("received SIGTERM")
+        attempts = [checks().count(f"(attempt {n} of 3)") for n in (1, 3)]
+        machine.succeed(f"kill -STOP {main_pid()}")
+        machine.succeed("systemctl start --no-block vota-health-check.service")
+        machine.wait_until_succeeds(
+            f"[ $(journalctl -u vota-health-check.service -o cat --no-pager | grep -c '(attempt 1 of 3)') -gt {attempts[0]} ]",
+            timeout=60,
+        )
+        machine.succeed("systemctl stop vota.service")
+        # Started at once (no 1-second polling): the check decides 2 seconds
+        # after its last probe. Should this start come too late, the check
+        # finds the service stopped and try-restart does nothing, so the
+        # assertions below still hold, only without testing the race.
+        machine.succeed(
+            "timeout 60 sh -c 'until [ $(journalctl -u vota-health-check.service -o cat --no-pager "
+            f"| grep -c \"(attempt 3 of 3)\") -gt {attempts[1]} ]; do sleep 0.1; done' "
+            "&& systemctl start --no-block vota.service"
+        )
+        # The check has decided and, if at all, restarted (try-restart waits).
+        machine.wait_until_succeeds(
+            "[ \"$(systemctl show -p ActiveState --value vota-health-check.service)\" != activating ]",
+            timeout=60,
+        )
+        machine.wait_until_succeeds(
+            "systemctl is-active vota.service && curl -sf http://127.0.0.1:8080/polls/healthz",
+            timeout=60,
+        )
+        print(checks())
+        # Stopped once on purpose, never restarted by the check.
+        assert journal().count("received SIGTERM") == stops + 1, journal()
+        machine.succeed("systemctl is-active vota-health-check.timer")
+        create_ballot(token)
+
     with subtest("a database file the service can't make 0600 is logged, and it still starts"):
         db = "/var/lib/vota/vota.db"
         machine.succeed("systemctl stop vota.service")

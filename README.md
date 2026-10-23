@@ -9,17 +9,17 @@ It is one Rust binary with one SQLite database, meant to run behind a reverse pr
 
 ## Features
 
-- **Personal Ballots**: one voter per URL. The URL carries a 128-bit **Ballot Token**, the voter's only credential.
+- **Personal Ballots**: one voter per URL. The URL carries a 128-bit **Ballot Token**, the voter's only credential. Create one at a time, or up to 1000 in one all-or-nothing request: one per Voter Reference from a list, or numbered within a Group.
 - **Single or multiple choice** (multiple choice may allow answering with no Option at all), **Final** (locked after submitting, with a confirmation step) or **Editable** (changeable until the deadline) Responses.
 - **Voting Deadline** with an optional **Fallback** that becomes the result if the voter doesn't answer. Deadlines can be extended, which reopens closed Ballots.
 - **Purge Date**: every Ballot is deleted automatically (by default four weeks after its deadline), or earlier on request.
-- **Admin bookkeeping**: a **Group** to fetch a survey's results together and a hidden **Voter Reference** (unique within the Group) to know whose Ballot is whose. Neither is ever shown to the voter.
+- **Admin bookkeeping**: a **Group** to fetch a survey's results together (and tally or export them as CSV with the client) and a hidden **Voter Reference** (unique within the Group) to know whose Ballot is whose. Neither is ever shown to the voter.
 - **Results API**: list Ballots with their raw results, filtered by Group and Ballot Status (`unanswered`, `answered`, `auto_fallback`).
 - **Voting page** that works without JavaScript and is enhanced by a small self-hosted script (local-time countdown; on Editable Ballots every change is saved at once, with retries and per-Option feedback). Markdown descriptions are sanitised. Nothing loads from third parties, and a strict Content Security Policy applies.
 - **Themes**: three built-in ones (`classic`, `dark`, `minimal`), more from a theme folder, plus per-Ballot accent colour and logo.
 - **Security**: strict input sanitization at one boundary, uniform not-found for unknown tokens, rate limiting of failed lookups and failed Admin Token checks per client IP (trusted-proxy aware), Admin Tokens stored only as hashes and never logged, an audit log of admin requests, connection limits and timeouts, strict security headers on every response, and `Cache-Control: no-store` on every voter page and API response. See [SECURITY.md](SECURITY.md).
 - **Admin Tokens** created, listed and revoked with a local CLI, no restart needed; or provisioned declaratively in files the server reads at startup (e.g. agenix secrets, `vota admin-token generate`).
-- **Admin CLI client**: `vota ballot create|get|list|edit|extend|delete` talks to the admin API of a running server from any machine. Dates may be relative (`--voting-deadline 7d`, `extend --voting-deadline +1d`). Man pages (`vota man`) and shell completions for six shells.
+- **Admin CLI client**: `vota ballot create|get|list|tally|edit|extend|delete` talks to the admin API of a running server from any machine. Dates may be relative (`--voting-deadline 7d`, `extend --voting-deadline +1d`). Many Ballots at once from a file of Voter References (`--voters voters.txt`) or a count (`--count 30`), printed as a table or as CSV for a mail merge; a Ballot's URL as a QR code in the terminal (`--qr`). `tally` sums up a Group's results by Option; `create --csv`, `list --csv` and `tally --csv` export CSV for spreadsheets (RFC 4180, with formula injection protection). Man pages (`vota man`) and shell completions for six shells.
 
 ## Quickstart
 
@@ -90,6 +90,9 @@ Open that `url` in a browser, choose an Option, press **Continue**, then **Confi
 curl -s http://localhost:8080/admin/ballots -H "Authorization: Bearer $TOKEN"
 # or, as a table:
 ./target/release/vota ballot list
+# or summed up by Option, or as CSV for a spreadsheet:
+./target/release/vota ballot tally
+./target/release/vota ballot list --csv > ballots.csv
 ```
 
 The Ballot now has `"status":"answered"` and a `result`. See [`vota ballot`](docs/reference/cli.md#ballot) for every command and flag, `vota completions <shell>` for shell completions (bash, zsh, fish, elvish, PowerShell, nushell) and `vota man <dir>` for man pages; the Nix packages install both. Stop the server with Ctrl-C.

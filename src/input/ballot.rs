@@ -16,6 +16,7 @@ use crate::domain::ballot::{
     Extension, FallbackChoice, Group, NewBallot, OptionLabel, OptionLabels, SubmissionMode, Title,
     VoterReference, VotingDeadline,
 };
+use crate::domain::bulk::{BallotCount, Bulk, ListRejection, MAX_BALLOTS, VoterReferenceList};
 use crate::domain::theme::{AccentColor, LogoName, ThemeCatalog, ThemeName};
 
 /// `POST /admin/ballots` body as received.
@@ -46,9 +47,14 @@ pub struct CreateBallotRequest {
     /// Absent means no Group.
     #[serde(default, deserialize_with = "present")]
     group: Option<String>,
-    /// Absent means no Voter Reference.
+    /// Absent means no Voter Reference; a list creates one Ballot per
+    /// entry (bulk creation).
     #[serde(default, deserialize_with = "present")]
-    voter_reference: Option<String>,
+    voter_reference: Option<VoterReferences>,
+    /// Bulk creation of this many Ballots with numbered Voter References;
+    /// requires a Group, excludes `voter_reference`.
+    #[serde(default, deserialize_with = "present")]
+    count: Option<i64>,
     /// A Theme by name; absent means the default Theme, `null` is rejected.
     #[serde(default, deserialize_with = "present")]
     theme: Option<String>,
@@ -58,6 +64,14 @@ pub struct CreateBallotRequest {
     /// A logo by name; absent means none.
     #[serde(default, deserialize_with = "present")]
     logo: Option<String>,
+}
+
+/// `voter_reference` at creation: one string, or a list of them.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum VoterReferences {
+    One(String),
+    List(Vec<String>),
 }
 
 /// For optional fields that may be absent but not `null`.
@@ -117,14 +131,16 @@ impl DateBounds {
     }
 }
 
-/// Unboxes a create-Ballot request. `dates` decides whether the Voting
-/// Deadline and Purge Date lie in the future and within the horizon;
-/// `catalog` which Theme and logo names exist.
+/// Unboxes a create-Ballot request into the Ballot and, for a bulk
+/// creation (a list of Voter References, or a `count`), how the Ballots get
+/// their Voter References; the Ballot then has none of its own. `dates`
+/// decides whether the Voting Deadline and Purge Date lie in the future and
+/// within the horizon; `catalog` which Theme and logo names exist.
 pub fn new_ballot(
     request: UntrustedValue<CreateBallotRequest>,
     dates: DateBounds,
     catalog: &dyn ThemeCatalog,
-) -> Result<NewBallot, InputError> {
+) -> Result<(NewBallot, Option<Bulk>), InputError> {
     let request: CreateBallotRequestUntrusted = request.to_untrusted_variant();
     let title = request.title.sanitize_with(title)?;
     let description = request.description.sanitize_with(description)?;
@@ -147,7 +163,17 @@ pub fn new_ballot(
     let voting_deadline = request
         .voting_deadline
         .sanitize_with(|raw| voting_deadline(raw, dates))?;
-    Ok(NewBallot {
+    let group = request.group.sanitize_with(group)?;
+    let (voter_reference, bulk) = request.voter_reference.sanitize_with(voter_references)?;
+    let has_reference = voter_reference.is_some() || bulk.is_some();
+    let bulk = match request.count.sanitize_with(|raw| {
+        raw.map(|raw| ballot_count(raw, group.is_some(), has_reference))
+            .transpose()
+    })? {
+        Some(count) => Some(Bulk::Numbered(count)),
+        None => bulk,
+    };
+    let ballot = NewBallot {
         title,
         description,
         choice_mode,
@@ -164,8 +190,8 @@ pub fn new_ballot(
                 .transpose()
         })?,
         options,
-        group: request.group.sanitize_with(group)?,
-        voter_reference: request.voter_reference.sanitize_with(voter_reference)?,
+        group,
+        voter_reference,
         theme: request
             .theme
             .sanitize_with(|raw| raw.map(|raw| theme(raw, catalog)).transpose())?
@@ -176,7 +202,60 @@ pub fn new_ballot(
         logo: request
             .logo
             .sanitize_with(|raw| raw.map(|raw| logo(raw, catalog)).transpose())?,
-    })
+    };
+    Ok((ballot, bulk))
+}
+
+/// `voter_reference` at creation: a string is the Ballot's own Voter
+/// Reference, a list a bulk creation (each entry sanitized like a Voter
+/// Reference, then the list's rules).
+fn voter_references(
+    raw: Option<VoterReferences>,
+) -> Result<(Option<VoterReference>, Option<Bulk>), InputError> {
+    match raw {
+        None => Ok((None, None)),
+        Some(VoterReferences::One(raw)) => Ok((voter_reference(Some(raw))?, None)),
+        Some(VoterReferences::List(raw)) => {
+            if raw.len() > MAX_BALLOTS {
+                // Before sanitizing a thousand entries in vain.
+                return Err(InputError::new(
+                    "voter_reference",
+                    ListRejection::TooMany.reason(),
+                ));
+            }
+            let references = (raw.into_iter().enumerate())
+                .map(|(index, raw)| {
+                    optional_text(
+                        raw,
+                        &format!("voter_reference[{index}]"),
+                        VoterReference::MAX_CHARS,
+                        VoterReference::new,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let list =
+                VoterReferenceList::new(references, Sanitized::PROOF).map_err(|rejection| {
+                    let field = match rejection {
+                        ListRejection::Duplicate(index) => format!("voter_reference[{index}]"),
+                        ListRejection::Empty | ListRejection::TooMany => "voter_reference".into(),
+                    };
+                    InputError::new(field, rejection.reason())
+                })?;
+            Ok((None, Some(Bulk::Listed(list))))
+        }
+    }
+}
+
+/// `count`: needs a Group and no `voter_reference` (neither one nor a list).
+fn ballot_count(raw: i64, has_group: bool, has_reference: bool) -> Result<BallotCount, InputError> {
+    let error = |reason| InputError::new("count", reason);
+    if has_reference {
+        return Err(error("can't be combined with voter_reference"));
+    }
+    if !has_group {
+        return Err(error("requires a group"));
+    }
+    BallotCount::new(raw).map_err(error)
 }
 
 fn description(raw: Option<String>) -> Result<Option<Description>, InputError> {

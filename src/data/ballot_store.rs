@@ -39,7 +39,7 @@ mod lookup;
 mod purge;
 mod responses;
 
-pub(crate) use create::insert;
+pub(crate) use create::{BulkRefused, insert, insert_bulk};
 pub(crate) use edit::{Edited, Extended, edit, extend};
 pub(crate) use lookup::{find_by_id, find_by_token, list};
 pub(crate) use purge::{delete, sweep_purged};

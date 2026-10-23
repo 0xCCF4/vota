@@ -8,9 +8,9 @@ use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 
 use crate::AppState;
-use crate::api::conflict::Conflict;
+use crate::api::conflict::{self, Conflict};
 use crate::api::{ballot_json, internal_error, rfc3339};
-use crate::data::ballot_store::{self, DuplicateVoterReference, Edited, Extended};
+use crate::data::ballot_store::{self, BulkRefused, DuplicateVoterReference, Edited, Extended};
 use crate::domain::ballot::{Ballot, BallotDraft};
 use crate::domain::theme::AccentColor;
 use crate::input::{
@@ -18,17 +18,34 @@ use crate::input::{
     ListBallotsQuery, NotFound, UntrustedJson, UntrustedQuery,
 };
 
-/// `POST /admin/ballots`: 201 with the admin view, including the public URL.
+/// `POST /admin/ballots`: 201 with the admin view, including the public URL;
+/// for a bulk creation (a list of Voter References, or `count`) 201 with
+/// `{"ballots": [...]}`, the admin views in order, or nothing created.
 pub(super) async fn create(
     State(state): State<AppState>,
     UntrustedJson(request): UntrustedJson<CreateBallotRequest>,
 ) -> Response {
     let now = state.clock.now();
-    let new = match input::new_ballot(request, date_bounds(&state, now), &*state.themes) {
+    let (new, bulk) = match input::new_ballot(request, date_bounds(&state, now), &*state.themes) {
         Ok(new) => new,
         Err(error) => return error.into_response(),
     };
     let draft = BallotDraft::new(new, state.config.default_purge_gap);
+    if let Some(bulk) = bulk {
+        return match ballot_store::insert_bulk(&state.db, &draft, &bulk, now).await {
+            Ok(Ok(ballots)) => {
+                let views: Vec<_> = (ballots.iter())
+                    .map(|ballot| admin_view(&state, ballot, now))
+                    .collect();
+                (StatusCode::CREATED, Json(json!({ "ballots": views }))).into_response()
+            }
+            Ok(Err(BulkRefused::Taken(taken))) => conflict::duplicate_voter_references(&taken),
+            Ok(Err(BulkRefused::NumberingExhausted)) => {
+                Conflict::NumberingExhausted.into_response()
+            }
+            Err(error) => internal_error("creating Ballots failed", error),
+        };
+    }
     match ballot_store::insert(&state.db, &draft, now).await {
         Ok(Ok(ballot)) => {
             let view = admin_view(&state, &ballot, now);

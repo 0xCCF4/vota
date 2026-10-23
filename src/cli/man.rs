@@ -1,7 +1,8 @@
 //! `vota man <dir>`: one man page per command and subcommand (`vota.1`,
 //! `vota-ballot.1`, `vota-ballot-create.1`, …), rendered by `clap_mangen`
 //! from the clap definition, plus the sections clap doesn't know:
-//! ENVIRONMENT, EXIT STATUS, EXAMPLES and SEE ALSO.
+//! ENVIRONMENT, EXIT STATUS (on the `ballot` pages from
+//! `ballot::Exit`), EXAMPLES and SEE ALSO.
 //!
 //! The pages cover the commands of the enabled features, as `--help` does.
 
@@ -160,42 +161,10 @@ fn environment(roff: &mut Roff, name: &str) {
 
 fn exit_status(roff: &mut Roff, name: &str) {
     section(roff, "EXIT STATUS");
+    #[cfg(feature = "client")]
     if is_ballot(name) {
-        for (code, text) in [
-            ("0", "Success."),
-            (
-                "1",
-                "Anything else: a 5xx, a redirect, an unexpected answer, or a declined delete \
-                 prompt.",
-            ),
-            (
-                "2",
-                "Usage error: bad or conflicting flags, no Admin Token, no URL, a refused URL, \
-                 an unreadable file, a --body that is not JSON, a date flag that is neither a \
-                 timestamp nor a relative date (or a + with nothing to be relative to), or \
-                 delete without a terminal and without --yes. Nothing was sent.",
-            ),
-            ("3", "404: no live Ballot with this ID (or a wrong --url)."),
-            (
-                "4",
-                "409: the Ballot can't be edited now, or the Voter Reference is taken in the \
-                 Group.",
-            ),
-            (
-                "5",
-                "400, 413, 415 or 422: the server refused the request's content.",
-            ),
-            (
-                "6",
-                "401 or 429: the Admin Token was refused, or this client's address is locked \
-                 out for a while.",
-            ),
-            (
-                "7",
-                "Network error, TLS error or timeout: no answer arrived.",
-            ),
-        ] {
-            item(roff, code, text);
+        for exit in super::ballot::Exit::ALL {
+            item(roff, &exit.code().to_string(), exit.description());
         }
         return;
     }
@@ -226,7 +195,11 @@ fn examples(roff: &mut Roff, name: &str) {
             "export VOTA_URL=https://example.org/polls/",
             "export VOTA_ADMIN_TOKEN=\"$(cat ~/.config/vota/token)\"",
             "vota ballot create --title Lunch --option Pizza --option Sushi --voting-deadline 3d",
+            "vota ballot create --title Survey --option Yes --option No --voting-deadline 14d \
+             --group staff --voters voters.txt --csv > links.csv",
             "vota ballot list --group lunch",
+            "vota ballot tally --group lunch",
+            "vota ballot list --group lunch --csv > lunch.csv",
             "vota ballot extend 1 --voting-deadline +1d",
         ],
         "vota-completions" => &[

@@ -38,13 +38,14 @@ flowchart LR
 | Form bodies (`POST /b/{token}`) | `Content-Type: application/x-www-form-urlencoded`, matched like JSON's (otherwise `415`). Unknown fields are rejected. Every field is read as a list of values. Invalid UTF-8 is rejected. |
 | Query strings (`GET /admin/ballots`) | Parsed like forms. Unknown parameters are rejected (`"field": null`). Each parameter at most once. Invalid UTF-8 in a known parameter's value names the parameter. |
 | Enums (`choice_mode`, `submission_mode`, `status`) | Exact match against the known names: no trimming, no case folding. Absent means the default (create) or the current value (edit). `null` is rejected. |
+| Bulk creation (`POST /admin/ballots`) | `voter_reference` as a list: 1 to 1000 entries, each single-line text, no entry twice after normalisation (`voter_reference[i]`); a longer list is refused before its entries are sanitized. `count`: a JSON integer from 1 to 1000, only with a `group` and without `voter_reference`. The numbered Voter References are built by the server from plain decimal digits. See [many Ballots at once](../reference/admin-api.md#many-ballots-at-once). |
 | Optional fields | May be absent. `null` is rejected on creation. On edit, `null` removes the value for `description`, `fallback`, `group`, `voter_reference`, `accent_color` and `logo`, and is rejected for every other field. |
 
 ## Text
 
 | Kind | Applies to | Rules |
 | ---- | ---------- | ----- |
-| Single-line text | `title`, Option `label`, `group`, `voter_reference`, Fallback labels, `group` filter, Admin Token labels (CLI) | Unicode NFC normalisation, then trim leading and trailing whitespace. Must not be empty. Rejects control characters (including newline and tab) and invisible, private-use and unassigned characters (see below), and more than four combining marks on one base character. Length is counted in characters **after** normalisation. |
+| Single-line text | `title`, Option `label`, `group`, `voter_reference` (each entry of a list too), Fallback labels, `group` filter, Admin Token labels (CLI) | Unicode NFC normalisation, then trim leading and trailing whitespace. Must not be empty. Rejects control characters (including newline and tab) and invisible, private-use and unassigned characters (see below), and more than four combining marks on one base character. Length is counted in characters **after** normalisation. |
 | Multi-line text | `description` | First `\r\n` and lone `\r` become `\n`. Then the same as single-line, except that newline and tab are allowed. |
 
 The rejected characters, so that texts that look alike can't pass as different (e.g. the Option labels `A` and `A` followed by an invisible variation selector):

@@ -216,7 +216,7 @@ fn a_value_that_is_neither_a_timestamp_nor_a_duration_is_a_usage_error() {
         "2026-12-01T12:00",
         "3d",
         "+7d",
-        "m (months)",
+        "m (calendar months)",
         "min (minutes)",
     ] {
         assert!(stderr.contains(form), "{form} in {stderr}");

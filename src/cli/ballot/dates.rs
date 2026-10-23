@@ -62,8 +62,7 @@ struct Span {
 enum SpanError {
     /// Not of the form `<number><unit>…` at all.
     Malformed,
-    /// A unit that isn't one of `min`, `h`, `d`, `w`, `m`, `y` (or their
-    /// long forms).
+    /// A unit that isn't one of [`Unit::names`].
     Unit(String),
     /// More than any date can hold.
     TooLong,
@@ -97,18 +96,20 @@ impl Span {
             let fixed = |seconds: i64| {
                 TimeDelta::try_seconds(seconds * i64::from(number)).ok_or(SpanError::TooLong)
             };
-            let (months, fixed) = match unit {
-                "" => return Err(SpanError::Malformed),
-                "min" | "mins" | "minute" | "minutes" => (0, fixed(60)?),
-                "h" => (0, fixed(3600)?),
-                "d" => (0, fixed(86_400)?),
-                "w" => (0, fixed(7 * 86_400)?),
-                "m" | "mo" | "month" | "months" => (number, TimeDelta::zero()),
-                "y" => (
+            if unit.is_empty() {
+                return Err(SpanError::Malformed);
+            }
+            let (months, fixed) = match Unit::parse(unit) {
+                Some(Unit::Minute) => (0, fixed(60)?),
+                Some(Unit::Hour) => (0, fixed(3600)?),
+                Some(Unit::Day) => (0, fixed(86_400)?),
+                Some(Unit::Week) => (0, fixed(7 * 86_400)?),
+                Some(Unit::Month) => (number, TimeDelta::zero()),
+                Some(Unit::Year) => (
                     number.checked_mul(12).ok_or(SpanError::TooLong)?,
                     TimeDelta::zero(),
                 ),
-                other => return Err(SpanError::Unit(other.to_owned())),
+                None => return Err(SpanError::Unit(unit.to_owned())),
             };
             span.months = span.months.checked_add(months).ok_or(SpanError::TooLong)?;
             span.fixed = span.fixed.checked_add(&fixed).ok_or(SpanError::TooLong)?;
@@ -124,12 +125,96 @@ impl Span {
     }
 }
 
-const ACCEPTED: &str = "give an RFC 3339 timestamp (2026-12-01T12:00:00+01:00), a local \
-                        date-time in the server's default time zone (2026-12-01T12:00), a \
-                        duration from now (3d, 1m2w, 90min) or + and a duration after the \
-                        Voting Deadline (+7d); a duration is numbers with units, without \
-                        spaces: min (minutes), h (hours), d (days), w (weeks), m (months), \
-                        y (years)";
+/// A unit of a duration: the one place the units are listed, for the
+/// parser, the help texts (and so the man pages) and the error message.
+/// The CLI reference has the same list; `docs_drift` (a test) compares them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Unit {
+    Minute,
+    Hour,
+    Day,
+    Week,
+    /// A calendar month.
+    Month,
+    /// 12 calendar months.
+    Year,
+}
+
+impl Unit {
+    /// Every unit, shortest span first.
+    pub(super) const ALL: [Self; 6] = [
+        Self::Minute,
+        Self::Hour,
+        Self::Day,
+        Self::Week,
+        Self::Month,
+        Self::Year,
+    ];
+
+    /// The names a duration may use for the unit, its short name first.
+    pub(super) fn names(self) -> &'static [&'static str] {
+        match self {
+            Self::Minute => &["min", "mins", "minute", "minutes"],
+            Self::Hour => &["h"],
+            Self::Day => &["d"],
+            Self::Week => &["w"],
+            Self::Month => &["m", "mo", "month", "months"],
+            Self::Year => &["y"],
+        }
+    }
+
+    /// What the short name means, e.g. `calendar months`.
+    fn meaning(self) -> &'static str {
+        match self {
+            Self::Minute => "minutes",
+            Self::Hour => "hours",
+            Self::Day => "days",
+            Self::Week => "weeks",
+            Self::Month => "calendar months",
+            Self::Year => "years",
+        }
+    }
+
+    /// The unit `name` stands for (case matters: `M` is none).
+    fn parse(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|unit| unit.names().contains(&name))
+    }
+}
+
+/// The units with their meaning: `min (minutes), h (hours), …`.
+pub(super) fn unit_list() -> String {
+    Unit::ALL
+        .iter()
+        .map(|unit| format!("{} ({})", unit.names()[0], unit.meaning()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The warning that `m` is not minutes, unlike in humantime durations;
+/// without a final period, like clap's one-paragraph help texts.
+pub(super) const M_IS_MONTHS: &str =
+    "Note: `m` is months here, unlike in the server's configuration";
+
+/// The end of the help text of a date flag: the units and [`M_IS_MONTHS`].
+pub(super) fn units_help() -> String {
+    format!(
+        "Units, combined without spaces (`2d12h`): {}. {M_IS_MONTHS}",
+        unit_list()
+    )
+}
+
+/// The forms a date flag takes, for its usage error.
+fn accepted() -> String {
+    format!(
+        "give an RFC 3339 timestamp (2026-12-01T12:00:00+01:00), a local date-time in the \
+         server's default time zone (2026-12-01T12:00), a duration from now (3d, 1m2w, \
+         90min) or + and a duration after the Voting Deadline (+7d); a duration is numbers \
+         with units, without spaces: {}",
+        unit_list()
+    )
+}
 
 impl Flag {
     fn parse(name: &'static str, value: &str) -> Result<Self, Failure> {
@@ -146,7 +231,11 @@ impl Flag {
                     SpanError::Unit(unit) => format!("unknown unit \"{}\"", printable(&unit)),
                     SpanError::TooLong => "the duration is too long for a date".to_owned(),
                 };
-                Failure::usage(format!("{name} {}: {why}; {ACCEPTED}", printable(value)))
+                Failure::usage(format!(
+                    "{name} {}: {why}; {}",
+                    printable(value),
+                    accepted()
+                ))
             })?;
             if relative {
                 When::After(delta)
@@ -330,6 +419,7 @@ impl Dates {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::ballot::exit::Exit;
     use chrono::{DateTime, Utc};
 
     fn now() -> DateTime<Utc> {
@@ -448,7 +538,7 @@ mod tests {
         let Err(failure) = result else {
             panic!("accepted");
         };
-        assert_eq!(failure.exit, 2, "{}", failure.message);
+        assert_eq!(failure.exit, Exit::Usage, "{}", failure.message);
         failure.message
     }
 
@@ -594,7 +684,7 @@ mod tests {
             );
 
             assert!(message.contains("min (minutes)"), "{message}");
-            assert!(message.contains("m (months)"), "{message}");
+            assert!(message.contains("m (calendar months)"), "{message}");
         }
     }
 

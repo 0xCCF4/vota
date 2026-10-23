@@ -2,7 +2,9 @@
 //! <text>}`: built only here, with one fixed message per case, so the voter
 //! and admin APIs can't phrase the same conflict differently by accident.
 //! The message never names the Ballot, its Group or Voter Reference, or
-//! anything the request sent.
+//! anything the request sent; only a bulk creation's refusal lists, in a
+//! field of its own, the Voter References it sent that are taken
+//! ([`duplicate_voter_references`]).
 
 use axum::Json;
 use axum::http::StatusCode;
@@ -40,6 +42,9 @@ pub(crate) enum Conflict {
     /// Reference. Names neither the Group, the Voter Reference nor the other
     /// Ballot (`duplicate_voter_reference`).
     DuplicateVoterReference,
+    /// Admin API, bulk creation by `count`: the Group's highest numeric
+    /// Voter Reference leaves no room to number on (`numbering_exhausted`).
+    NumberingExhausted,
 }
 
 impl Conflict {
@@ -51,6 +56,7 @@ impl Conflict {
             Self::VotingClosed => "voting_closed",
             Self::BallotChanged => "ballot_changed",
             Self::DuplicateVoterReference => "duplicate_voter_reference",
+            Self::NumberingExhausted => "numbering_exhausted",
         }
     }
 
@@ -69,6 +75,9 @@ impl Conflict {
             Self::DuplicateVoterReference => {
                 "another Ballot in this Group already has this Voter Reference"
             }
+            Self::NumberingExhausted => {
+                "the Group's numeric Voter References are too large to number on"
+            }
         }
     }
 }
@@ -78,6 +87,19 @@ impl IntoResponse for Conflict {
         let body = json!({ "error": self.code(), "message": self.message() });
         (StatusCode::CONFLICT, Json(body)).into_response()
     }
+}
+
+/// A bulk creation's 409 `duplicate_voter_reference`: the fixed body plus
+/// `voter_references`, the Voter References of the request that are taken
+/// within the Group (the admin sent them; nothing else is named).
+pub(crate) fn duplicate_voter_references(taken: &[String]) -> Response {
+    let conflict = Conflict::DuplicateVoterReference;
+    let body = json!({
+        "error": conflict.code(),
+        "message": conflict.message(),
+        "voter_references": taken,
+    });
+    (StatusCode::CONFLICT, Json(body)).into_response()
 }
 
 /// Why the voter's Response is refused.

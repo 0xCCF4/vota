@@ -214,7 +214,9 @@ let
   };
 
   # The periodic check: restarts a running service whose `/healthz` stops
-  # answering. A stopped service stays stopped.
+  # answering. A stopped service stays stopped, and one stopped (or
+  # restarted) while the probes ran is left alone: the probes failed for
+  # the instance that was stopped, not for the one running now.
   healthCheck = pkgs.writeShellApplication {
     name = "vota-health-check";
     runtimeInputs = [
@@ -225,6 +227,8 @@ let
       if [ "$(systemctl is-active vota.service)" != active ]; then
         exit 0
       fi
+      # Which run of the service is probed; a new one after a stop and start.
+      invocation=$(systemctl show -p InvocationID --value vota.service)
       for attempt in 1 2 3; do
         if ${probe}; then
           exit 0
@@ -232,6 +236,10 @@ let
         echo "vota: ${healthUrl} did not answer (attempt $attempt of 3)" >&2
         sleep 2
       done
+      if [ "$(systemctl show -p InvocationID --value vota.service)" != "$invocation" ]; then
+        echo "vota: vota.service was stopped or started again during the check; leaving it alone" >&2
+        exit 0
+      fi
       echo "vota: restarting vota.service" >&2
       # try-restart: a service stopped while the probes ran stays stopped.
       systemctl try-restart vota.service

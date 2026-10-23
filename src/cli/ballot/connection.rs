@@ -9,7 +9,7 @@ use reqwest::header::{self, HeaderValue};
 use reqwest::{Method, StatusCode};
 use url::Url;
 
-use super::{Failure, read_input};
+use super::{Exit, Failure, read_input};
 
 /// Where the server is and how to reach it: global flags of `ballot`.
 #[derive(clap::Args)]
@@ -135,7 +135,9 @@ impl ConnectionArgs {
         let http = builder
             .build()
             // In practice a TLS problem, e.g. no CA certificates on the system.
-            .map_err(|error| Failure::new(7, with_causes("can't set up TLS", &error)))?;
+            .map_err(|error| {
+                Failure::new(Exit::Network, with_causes("can't set up TLS", &error))
+            })?;
         Ok(Connection {
             http,
             base,
@@ -205,10 +207,9 @@ impl Connection {
         path: &str,
         body: Option<Vec<u8>>,
     ) -> Result<Reply, Failure> {
-        let url = self
-            .base
-            .join(path)
-            .map_err(|error| Failure::new(1, format!("can't build the request URL: {error}")))?;
+        let url = self.base.join(path).map_err(|error| {
+            Failure::new(Exit::Other, format!("can't build the request URL: {error}"))
+        })?;
         let mut request = self
             .http
             .request(method, url)
@@ -236,7 +237,7 @@ fn network_failure(error: reqwest::Error) -> Failure {
     } else {
         "request failed"
     };
-    Failure::new(7, with_causes(what, &error))
+    Failure::new(Exit::Network, with_causes(what, &error))
 }
 
 /// `what`, the error and its source chain, which names the cause (refused,
@@ -262,7 +263,7 @@ fn reply(status: StatusCode, headers: &header::HeaderMap, body: &[u8]) -> Result
         return match json {
             Some(json) => Ok(Some(json)),
             None => Err(Failure::new(
-                1,
+                Exit::Other,
                 format!("unexpected response: {status} without a JSON body"),
             )),
         };
@@ -273,17 +274,11 @@ fn reply(status: StatusCode, headers: &header::HeaderMap, body: &[u8]) -> Result
             .map(|value| super::printable(&String::from_utf8_lossy(value.as_bytes())))
             .unwrap_or_else(|| "nowhere".into());
         return Err(Failure::new(
-            1,
+            Exit::Other,
             format!("{status}: redirected to {location}; redirects are not followed (check --url)"),
         ));
     }
-    let exit = match status.as_u16() {
-        404 => 3,
-        409 => 4,
-        400 | 413 | 415 | 422 => 5,
-        401 | 429 => 6,
-        _ => 1,
-    };
+    let exit = Exit::for_status(status);
     let mut message = status.as_u16().to_string();
     match &json {
         Some(error) if error.get("error").is_some_and(|code| code.is_string()) => {

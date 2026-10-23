@@ -1,5 +1,6 @@
 //! Which commands a build of `vota` has follows its cargo features: `serve`
-//! and `admin-token` need `server`, `ballot` needs `client`, and
+//! and `admin-token` need `server`, `ballot` needs `client` (its `--qr`
+//! needs `qr`), and
 //! `completions`, `man` and `--version` work in every build. A command whose feature
 //! is off doesn't appear in `--help` and is refused as unknown.
 
@@ -87,4 +88,25 @@ fn ballot_is_unknown_without_the_client_feature() {
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("unrecognized subcommand"), "{stderr}");
+}
+
+#[cfg(feature = "client")]
+#[test]
+fn qr_exists_only_with_the_qr_feature() {
+    for command in [
+        &["ballot", "get", "1", "--qr"][..],
+        &["ballot", "create", "--qr"],
+    ] {
+        let output = vota(command);
+
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        // With `qr`, the flag is known and the command fails later (no URL
+        // or Admin Token is given).
+        assert_eq!(
+            stderr.contains("unexpected argument '--qr'"),
+            cfg!(not(feature = "qr")),
+            "{command:?}: {stderr}"
+        );
+        assert_eq!(output.status.code(), Some(2), "{command:?}: {stderr}");
+    }
 }

@@ -45,14 +45,18 @@ pub(super) struct Fields {
     /// Final (submitted once) or editable (changeable until the deadline).
     #[arg(long, value_enum)]
     submission_mode: Option<SubmissionMode>,
-    /// Voting Deadline: RFC 3339, e.g. 2026-12-01T12:00:00+01:00; without
-    /// an offset (2026-12-01T12:00) it is local time in the server's
-    /// default time zone. Or a duration from now, e.g. `3d`, `1m2w`; on
-    /// `edit`, `+1d` is a day after the current Voting Deadline. Units,
-    /// combined without spaces (`2d12h`): min (minutes), h (hours), d
-    /// (days), w (weeks), m (calendar months), y (years). Note: `m` is
-    /// months here, unlike in the server's configuration.
-    #[arg(long, value_name = "DATETIME|DURATION|+DURATION")]
+    // The units from `dates`, so not a doc comment.
+    #[arg(
+        long,
+        value_name = "DATETIME|DURATION|+DURATION",
+        help = format!(
+            "Voting Deadline: RFC 3339, e.g. 2026-12-01T12:00:00+01:00; without an offset \
+             (2026-12-01T12:00) it is local time in the server's default time zone. Or a \
+             duration from now, e.g. `3d`, `1m2w`; on `edit`, `+1d` is a day after the \
+             current Voting Deadline. {}",
+            super::dates::units_help()
+        )
+    )]
     voting_deadline: Option<String>,
     /// Purge Date: as --voting-deadline (a duration is from now), or `+`
     /// and a duration after the Voting Deadline, e.g. `+7d`: the one given
@@ -65,9 +69,11 @@ pub(super) struct Fields {
     /// Group.
     #[arg(long)]
     group: Option<String>,
-    /// Voter Reference (unique within its Group).
-    #[arg(long)]
-    voter_reference: Option<String>,
+    /// Voter Reference (unique within its Group). On `create`, repeat it
+    /// to create one Ballot per Voter Reference, alike otherwise (all or
+    /// none); on `edit`, give it at most once.
+    #[arg(long, value_name = "REFERENCE")]
+    voter_reference: Vec<String>,
     /// Theme name.
     #[arg(long)]
     theme: Option<String>,
@@ -77,6 +83,35 @@ pub(super) struct Fields {
     /// Logo name.
     #[arg(long)]
     logo: Option<String>,
+}
+
+/// The Voter References of a bulk `create` beyond `--voter-reference`.
+pub(super) enum Bulk {
+    /// From `--voters`: always the list form, even with one entry.
+    Voters(Vec<String>),
+    /// `--count`.
+    Count(i64),
+}
+
+/// The Voter References in a `--voters` file: one per line, surrounding
+/// whitespace trimmed; empty lines and lines starting with `#` (after the
+/// trimming) are skipped.
+pub(super) fn voters(path: &Path) -> Result<Vec<String>, Failure> {
+    let text = read_input(path, "--voters")?;
+    Ok(text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Whether a body (from the flags or a `--body` file) asks for a bulk
+/// create: its `voter_reference` is a list, or it has a `count`.
+#[cfg(feature = "qr")]
+pub(super) fn is_bulk_body(body: &[u8]) -> bool {
+    let value: Value = serde_json::from_slice(body).unwrap_or_default();
+    value.get("voter_reference").is_some_and(Value::is_array) || value.get("count").is_some()
 }
 
 /// The `--clear-*` flags of `edit`: each sends `null`, which removes the
@@ -125,8 +160,19 @@ impl Fields {
     }
 
     /// The JSON body: one key per given flag (and `null` per `--clear-*`
-    /// flag); a field without a flag is left out.
-    pub(super) fn into_body(self, clears: Option<Clears>) -> Result<Vec<u8>, Failure> {
+    /// flag); a field without a flag is left out. `--voter-reference` once is
+    /// a string, more often a list (refused on `edit`, which has `clears`);
+    /// `bulk` adds the Voter References of `--voters` or `--count`.
+    pub(super) fn into_body(
+        self,
+        clears: Option<Clears>,
+        bulk: Option<Bulk>,
+    ) -> Result<Vec<u8>, Failure> {
+        if clears.is_some() && self.voter_reference.len() > 1 {
+            return Err(Failure::usage(
+                "--voter-reference can be given only once on edit",
+            ));
+        }
         let mut body = Map::new();
         let mut put = |key: &str, value: Option<Value>| {
             if let Some(value) = value {
@@ -163,7 +209,19 @@ impl Fields {
             (!self.fallback.is_empty()).then(|| self.fallback.into()),
         );
         put("group", self.group.map(Value::from));
-        put("voter_reference", self.voter_reference.map(Value::from));
+        put(
+            "voter_reference",
+            match self.voter_reference.len() {
+                0 => None,
+                1 => self.voter_reference.into_iter().next().map(Value::from),
+                _ => Some(self.voter_reference.into()),
+            },
+        );
+        match bulk {
+            Some(Bulk::Voters(references)) => put("voter_reference", Some(references.into())),
+            Some(Bulk::Count(count)) => put("count", Some(count.into())),
+            None => {}
+        }
         put("theme", self.theme.map(Value::from));
         put("accent_color", self.accent_color.map(Value::from));
         put("logo", self.logo.map(Value::from));

@@ -1,5 +1,6 @@
 //! The command line: `serve` and `admin-token …` (cargo feature `server`),
-//! the admin API client `ballot …` (cargo feature `client`), and
+//! the admin API client `ballot …` (cargo feature `client`; its `--qr`
+//! needs `qr`), and
 //! `completions` and `man` (every build). There is no default command:
 //! `vota` alone shows the help.
 

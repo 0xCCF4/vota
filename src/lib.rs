@@ -8,7 +8,9 @@
 //!
 //! Cargo features: `server` (on by default) is everything but [`cli`]'s
 //! client and `completions`; `client` (on by default) is `vota ballot`, the
-//! admin API client. The character rules in `input` serve both.
+//! admin API client; `qr` (on by default, needs `client`) adds `--qr` to
+//! `vota ballot create` and `get`. The character rules in `input` serve
+//! both.
 
 #![forbid(unsafe_code)]
 

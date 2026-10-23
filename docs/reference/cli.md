@@ -8,7 +8,7 @@ vota [--config <FILE>] admin-token create [--label <LABEL>] [--expires-in <DURAT
 vota [--config <FILE>] admin-token list [--json]
 vota [--config <FILE>] admin-token revoke (<ID> | --label <LABEL>)
 vota admin-token generate
-vota ballot <create|get|list|edit|extend|delete> [<connection flags>] [--json] …
+vota ballot <create|get|list|tally|edit|extend|delete> [<connection flags>] [--json] …
 vota completions <bash|zsh|fish|elvish|powershell|nushell>
 vota man <DIR>
 vota --help | --version
@@ -16,25 +16,27 @@ vota --help | --version
 
 ## Builds and cargo features
 
-Which commands a `vota` binary has depends on the cargo features it was built with. Both are on by default. A command whose feature is off is not in `--help`, and calling it is a usage error (`error: unrecognized subcommand`, exit 2). There is no default command in any build: `vota` alone prints the help (exit 2), and the server starts only with `vota serve`.
+Which commands a `vota` binary has depends on the cargo features it was built with. All three are on by default. A command whose feature is off is not in `--help`, and calling it is a usage error (`error: unrecognized subcommand`, exit 2). There is no default command in any build: `vota` alone prints the help (exit 2), and the server starts only with `vota serve`.
 
 | Feature  | Commands | What it brings in |
 | -------- | -------- | ----------------- |
 | `server` | [`serve`](#serve), [`admin-token …`](#admin-token-create), the `--config` option | The web server and the database: axum, hyper, SQLite (sqlx), templates, Themes and static assets, configuration loading. |
-| `client` | [`ballot …`](#ballot) | The admin API client: reqwest with rustls. |
+| `client` | [`ballot …`](#ballot) | The admin API client: reqwest with rustls, and the `csv` crate for CSV output. |
+| `qr` | `--qr` of [`ballot create`](#ballot-create) and [`ballot get`](#ballot-get) | The Ballot URL as a terminal QR code: the `qrcode` crate without its image features. Needs `client` (turns it on). Without `qr` the flag doesn't exist. |
 
 [`completions`](#completions), [`man`](#man), `--help` and `--version` are in every build.
 
 | Build | Command | Commands it has |
 | ----- | ------- | --------------- |
 | Full (default) | `cargo build --release` | all |
-| Client only, for admin workstations | `cargo build --release --no-default-features --features client` | `ballot`, `completions`, `man` |
+| Client only, for admin workstations | `cargo build --release --no-default-features --features qr` | `ballot` (with `--qr`), `completions`, `man` |
+| Client only, without QR codes | `cargo build --release --no-default-features --features client` | `ballot` (without `--qr`), `completions`, `man` |
 | Server only | `cargo build --release --no-default-features --features server` | `serve`, `admin-token`, `completions`, `man` |
 | Neither | `cargo build --release --no-default-features` | `completions`, `man` |
 
 `admin-token` belongs to `server`: it works directly on the server's database (it needs the configuration, SQLite and the database migrations), so it runs on the server's host anyway. A client-only build manages Ballots through the admin API with a token created there. [`admin-token generate`](#admin-token-generate) needs no database, but stays with the other `admin-token` commands in `server`; where only a client build is at hand, its [shell one-liner](#admin-token-generate) makes the same token.
 
-The flake has the full build as `packages.default` (and `vota`) and the client-only build as `packages.vota-client`; `cargo install vota --no-default-features --features client` installs the client from crates.io.
+The flake has the full build as `packages.default` (and `vota`) and the client-only build as `packages.vota-client`; `cargo install vota --no-default-features --features qr` installs the client (with `--qr`) from crates.io.
 
 ## Global options
 
@@ -283,7 +285,8 @@ A client for the [admin API](admin-api.md) of a running Vota server: it builds t
 ```text
 vota ballot create (<field flags> | --body <FILE|->)
 vota ballot get <ID>
-vota ballot list [--group <GROUP>] [--status unanswered|answered|auto_fallback]
+vota ballot list [--group <GROUP>] [--status unanswered|answered|auto_fallback] [--csv]
+vota ballot tally [--group <GROUP>] [--csv]
 vota ballot edit <ID> (<field flags> <--clear-* flags> | --body <FILE|->)
 vota ballot extend <ID> --voting-deadline <DATETIME|DURATION|+DURATION>
 vota ballot delete <ID> [--yes]
@@ -303,13 +306,13 @@ These flags may come before or after the verb.
 | `--ca-cert <PEM>` | | Also trust the CA certificates in this PEM file, on top of the system's root certificates (e.g. for a private CA). |
 | `--insecure` | | Don't verify the server's TLS certificate, and print a warning on stderr. **Unsafe**: anyone on the way can read the Admin Token. |
 | `--allow-http` | | Allow `http://` to a host other than loopback. **Unsafe**: the Admin Token travels in clear text. |
-| `--json` | | Print the server's JSON answer instead of the readable output (see [Output](#output)). |
+| `--json` | | Print the server's JSON answer instead of the readable output (`tally`: its own JSON; see [Output](#output)). |
 
 The Admin Token is taken from `--token`, else `--token-file`, else `VOTA_ADMIN_TOKEN`. It is never printed, and the client logs nothing (`RUST_LOG` has no effect on it). The server commands don't warn about `VOTA_URL` and `VOTA_ADMIN_TOKEN`, so both may stay set in an admin's shell (see [Environment variables](configuration.md#environment-variables)).
 
 The URL must be absolute. `https://` is always allowed. `http://` is allowed to a loopback host (`localhost`, `127.0.0.0/8`, `::1`), and to any other host only with `--allow-http`. Any other scheme, or none, is refused; the client doesn't guess one. The TLS certificate is checked against the system's root certificates (rustls, no OpenSSL), plus those of `--ca-cert`. For an `http://` URL no TLS is used, and no CA store is needed.
 
-Each command sends exactly one request (`delete` in a terminal sends two: see below), with `User-Agent: vota/<version>`. Redirects are never followed: a `3xx` is an error naming its `Location` (exit 1), which usually means `--url` lacks the sub-path or uses `http` where the proxy redirects to `https`. Nothing is retried.
+Each command sends exactly one request (`delete` in a terminal sends two: see below; `tally` sends the `GET /admin/ballots` of `list`), with `User-Agent: vota/<version>`. Redirects are never followed: a `3xx` is an error naming its `Location` (exit 1), which usually means `--url` lacks the sub-path or uses `http` where the proxy redirects to `https`. Nothing is retried.
 
 ```sh
 export VOTA_URL=https://ballots.example.org/
@@ -335,7 +338,7 @@ The examples below ran against `vota serve` with `public_base_url = "http://loca
 | `--purge-date <DATETIME\|DURATION\|+DURATION>` | `purge_date`, in the same forms; `+7d` is 7 days after the Voting Deadline of the same command, or on `edit` without one, the Ballot's current one. |
 | `--fallback <LABEL>` | `fallback`: an Option's label; repeat it for more than one. |
 | `--group <GROUP>` | `group` |
-| `--voter-reference <REF>` | `voter_reference` |
+| `--voter-reference <REF>` | `voter_reference`. On `create`, repeat it to create [many Ballots](#many-ballots-at-once) (`--voter-reference alice --voter-reference bob` sends a list); on `edit`, more than once is a usage error. |
 | `--theme <NAME>` | `theme` |
 | `--accent-color <#RRGGBB>` | `accent_color` |
 | `--logo <NAME>` | `logo` |
@@ -363,6 +366,8 @@ Error: --body: the file is not JSON                               (exit 2)
 | Timestamp | `2026-12-01T12:00:00+01:00`, `2026-12-01T12:00` | Sent as given; the server reads it (see the flag table). Any value that starts like a date (`YYYY-`) is a timestamp. |
 | Duration | `--voting-deadline 3d`, `--purge-date 2m` | That long from now, by the clock of the machine the client runs on, to the whole second. |
 | `+` duration | `--purge-date +7d`, `extend --voting-deadline +1d` | That long after the Voting Deadline: for `--purge-date`, the one given in the same command, otherwise (on `edit`) the Ballot's current one; for `--voting-deadline` (on `edit` and `extend`), the Ballot's current one. |
+
+<!-- A test (src/cli/ballot/docs_drift.rs) reads the table below and the unit list in the error example further down: keep the sentence ending in "The units, in lower case:" and one row per unit, its names in backticks, as in the code. -->
 
 A duration is one or more `<number><unit>` groups without spaces, such as `3d`, `1m2w` or `2d12h`. The units, in lower case:
 
@@ -409,7 +414,7 @@ An unreadable value is a usage error (exit 2) that names the flag and lists the 
 
 ```text
 $ vota ballot create --title T --option A --option B --voting-deadline "next friday"
-Error: --voting-deadline next friday: not a timestamp or a duration; give an RFC 3339 timestamp (2026-12-01T12:00:00+01:00), a local date-time in the server's default time zone (2026-12-01T12:00), a duration from now (3d, 1m2w, 90min) or + and a duration after the Voting Deadline (+7d); a duration is numbers with units, without spaces: min (minutes), h (hours), d (days), w (weeks), m (months), y (years)      (exit 2)
+Error: --voting-deadline next friday: not a timestamp or a duration; give an RFC 3339 timestamp (2026-12-01T12:00:00+01:00), a local date-time in the server's default time zone (2026-12-01T12:00), a duration from now (3d, 1m2w, 90min) or + and a duration after the Voting Deadline (+7d); a duration is numbers with units, without spaces: min (minutes), h (hours), d (days), w (weeks), m (calendar months), y (years)      (exit 2)
 $ vota ballot create --title T --option A --option B --voting-deadline 3M
 Error: --voting-deadline 3M: unknown unit "M"; give an RFC 3339 timestamp …      (exit 2)
 $ vota ballot create --title T --option A --option B --voting-deadline +1d
@@ -418,9 +423,23 @@ Error: --voting-deadline +1d: + is relative to the current Voting Deadline, and 
 
 ### Output
 
-By default the output is for people. With `--json`, every command prints the server's JSON answer instead, pretty-printed, on stdout (`delete` prints nothing), for scripts and `jq`.
+By default the output is for people. With `--json`, every command prints the server's JSON answer instead, pretty-printed, on stdout (`delete` prints nothing; [`tally`](#ballot-tally) prints its own documented JSON, since it is computed by the client), for scripts and `jq`. `create`, `list` and `tally` also print [CSV](#csv-output) with `--csv`, which can't be combined with `--json`. `create` and `get` have `--qr` (cargo feature `qr`), which adds a QR code of the URL on stderr.
 
-Text from the server is escaped before it is printed, like the [`admin-token list`](#admin-token-list) output: control, bidi and other invisible characters (and newlines inside a value) appear as `\u{…}` in the readable output and as JSON escapes with `--json`, so nothing from the server can steer the terminal. The server already refuses such characters in every text field.
+Text from the server is escaped before it is printed, like the [`admin-token list`](#admin-token-list) output: control, bidi and other invisible characters (and newlines inside a value) appear as `\u{…}` in the readable output and as JSON escapes with `--json`, so nothing from the server can steer the terminal. In CSV, line feeds and tabs are kept (a quoted cell may span lines) and every other such character appears as `\u{…}`. The server already refuses such characters in every text field.
+
+### CSV output
+
+`create --csv` ([many Ballots](#many-ballots-at-once)), `list --csv` and `tally --csv` print [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180) CSV on stdout, for spreadsheets and scripts:
+
+- UTF-8 without a byte order mark, and a header row first (also when there are no records).
+- Every record ends with CRLF, as the RFC says. A line break inside a value is kept as it is, inside the quoted cell.
+- A cell is put in double quotes only when it holds `,`, `"`, CR or LF; a `"` inside it is doubled.
+- **Formula injection protection**: a cell that starts with `=`, `+`, `-`, `@`, tab or CR gets a leading `'`, so a spreadsheet shows it as text instead of running it as a formula (a Voter Reference `=HYPERLINK(…)` is written `'=HYPERLINK(…)`, and `-5` as `'-5`). The quoting rule applies after that. Strip the `'` when reading such a cell back into a program.
+- A value that is `null` in the API is an empty cell.
+
+```sh
+vota ballot list --group offsite-2027 --csv > offsite-2027.csv
+```
 
 ### `ballot create`
 
@@ -446,7 +465,19 @@ Voting Deadline: 2026-10-27T12:00:00Z
 Purge Date:      2026-11-24T12:00:00Z
 ```
 
-So `URL=$(vota ballot create …)` captures the URL. Every field at once:
+So `URL=$(vota ballot create …)` captures the URL. With `--qr` (cargo feature `qr`) it also draws the URL as a QR code on stderr, for a phone to scan, with the plain URL below it; stdout stays the same:
+
+```text
+$ vota ballot create --title "Lunch on Friday?" --option Pizza --option Sushi --voting-deadline 3d --qr 2>&1 >/dev/null | tail -n 4
+████▄▄▄▄▄▄▄█▄███▄▄▄█▄▄█▄█▄▄██▄▄▄▄██▄█████
+█████████████████████████████████████████
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+http://localhost:8080/b/_W1FHrvJeCrOhLlx2wRZXw
+```
+
+The code uses Unicode half blocks (`▀`, `▄`, `█`, two modules per character) with the standard quiet zone of four modules. Light modules are drawn in the terminal's text colour and dark ones left blank, so on the usual light text on a dark background it shows dark on light, as scanners expect (on a light background it shows inverted, which most phone cameras read as well). With `--json`, `--csv` or neither, stdout is unaffected. `--qr` with many Ballots is a usage error (exit 2), before anything is sent.
+
+Every field at once:
 
 ```sh
 vota ballot create --title "Team offsite: which date works?" \
@@ -457,11 +488,68 @@ vota ballot create --title "Team offsite: which date works?" \
   --group offsite-2027 --voter-reference alice@example.org --theme dark --accent-color "#E07A1F"
 ```
 
-With `--json` it prints the [admin view](admin-api.md#the-admin-view-of-a-ballot), as `get --json` does.
+With `--json` it prints the [admin view](admin-api.md#the-admin-view-of-a-ballot), as `get --json` does. With `--csv` it prints the CSV described [below](#many-ballots-at-once), with one row.
+
+#### Many Ballots at once
+
+`create` makes many Ballots in one request, alike but for their Voter References, all or none ([API](admin-api.md#many-ballots-at-once)); each has its own URL. Three flags give the Voter References; they exclude each other and `--body`:
+
+| Flag | Sends |
+| ---- | ----- |
+| `--voter-reference <REF>`, more than once | `voter_reference` as a list, in the order given. Once, it creates one Ballot as above. |
+| `--voters <FILE\|->` | `voter_reference` as a list, read from the file (or stdin): one Voter Reference per line; surrounding whitespace is trimmed, and empty lines and lines starting with `#` (after trimming) are skipped. Always the list form, even for one line. |
+| `--count <N>` | `count`: N Ballots in the `--group`, numbered after the Group's highest purely numeric Voter Reference ([numbering](admin-api.md#many-ballots-at-once)). |
+
+The server checks the rest: at most 1000 Ballots, no Voter Reference twice in the list, `--count` only with `--group`. A `voters.txt`:
+
+```text
+# Staff survey 2026
+alice@example.org
+bob@example.org
+
+carol@example.org
+```
+
+```text
+$ vota ballot create --title "Staff survey" --option Yes --option No --voting-deadline 14d \
+    --group staff-2026 --voters voters.txt
+VOTER-REFERENCE    ID  URL
+alice@example.org  2   http://localhost:8080/b/vc3OR3AS59FBi3dsXGhzfA
+bob@example.org    3   http://localhost:8080/b/zBcQ8cckb4BxShAglThUCw
+carol@example.org  4   http://localhost:8080/b/IbI5EHV0Uh5LoUVGV_vGVQ
+```
+
+stderr:
+
+```text
+Voting Deadline: 2026-11-06T11:11:15Z (in 14d)
+Created 3 Ballots: Staff survey
+Group:           staff-2026
+Voting Deadline: 2026-11-06T11:11:15Z
+Purge Date:      2026-12-04T11:11:15Z
+```
+
+With `--json` it prints the server's answer, `{"ballots": [...]}` with every admin view. With `--csv` it prints `voter_reference,id,url` and one row per Ballot, for a mail merge or a spreadsheet, as described in [CSV output](#csv-output) (with its formula injection protection). `--csv` can't be combined with `--json`.
+
+```text
+$ vota ballot create --title "Room booking" --option Yes --option No --voting-deadline 7d \
+    --group rooms --count 2 --csv
+voter_reference,id,url
+1,5,http://localhost:8080/b/h-TPNB4eE7ERo6KxvsilnA
+2,6,http://localhost:8080/b/mBZwyFeb9zEWbww0Mgceew
+```
+
+If a Voter Reference is taken in the Group, nothing is created, and the error names the taken ones (exit 4):
+
+```text
+$ vota ballot create --title "Staff survey" --option Yes --option No --voting-deadline 14d \
+    --group staff-2026 --voter-reference dave@example.org --voter-reference bob@example.org
+Error: 409 duplicate_voter_reference: another Ballot in this Group already has this Voter Reference (taken: bob@example.org)
+```
 
 ### `ballot get`
 
-`GET /admin/ballots/{id}`. Prints the admin view as a block: the URL, Ballot Status, Group, Voter Reference, modes, dates, Theme Tweaks, description, Options with their IDs, Fallback, Response and result. `-` stands for no value. This Ballot (2, above) had a Response from its voter:
+`GET /admin/ballots/{id}`. With `--qr` (cargo feature `qr`) it also draws the Ballot's URL as a QR code on stderr, as [`create --qr`](#ballot-create) does. Prints the admin view as a block: the URL, Ballot Status, Group, Voter Reference, modes, dates, Theme Tweaks, description, Options with their IDs, Fallback, Response and result. `-` stands for no value. This Ballot (2, above) had a Response from its voter:
 
 ```text
 $ vota ballot get 2
@@ -536,6 +624,7 @@ $ vota ballot get 1 --json
 | ---- | ------- |
 | `--group <GROUP>` | Only Ballots in this Group. Sent percent-encoded, so any text works (`--group "Q3 survey & more"`). |
 | `--status <STATUS>` | Only Ballots with this Ballot Status: `unanswered`, `answered` or `auto_fallback`. |
+| `--csv` | Print the list as [CSV](#csv-output) instead (see below). Can't be combined with `--json`. |
 
 ```text
 $ vota ballot list
@@ -546,6 +635,96 @@ ID  STATUS      GROUP         VOTER-REFERENCE    VOTING-DEADLINE       RESULT
 ```
 
 RESULT is `(none)` for a Response of no Option (Allow No Option), and `-` without a result. With no Ballot it prints only the header line. With `--json` it prints the API's `{"ballots": [...]}`, e.g. `vota ballot list --group offsite-2027 --status answered --json | jq -r '.ballots[] | [.voter_reference, .result.options[].label] | @tsv'`.
+
+With `--csv` it prints one [CSV](#csv-output) record per Ballot, in the same order, with these columns from the [admin view](admin-api.md#the-admin-view-of-a-ballot):
+
+| Column | Value |
+| ------ | ----- |
+| `id` | The Ballot's ID. |
+| `status` | `unanswered`, `answered` or `auto_fallback`. |
+| `group`, `voter_reference` | As stored; empty without one. |
+| `voting_deadline`, `purge_date` | RFC 3339 UTC, as the API gives them. |
+| `choice_mode`, `submission_mode` | `single`/`multiple`, `final`/`editable`. |
+| `result` | The result's Option labels in Option order, joined with `; `. Empty without a result, and for a Response of no Option. |
+| `result_source` | `answered` (the voter's Response), `fallback` (the Fallback applied) or empty (no result yet). So `answered` with an empty `result` is a Response of no Option. |
+
+There are no URLs and no Ballot Tokens in it, so the file can be shared without handing out anyone's Ballot. A label that contains `; ` itself can't be told apart in `result`; take `--json` for exact values.
+
+```text
+$ vota ballot list --group offsite-2027 --csv
+id,status,group,voter_reference,voting_deadline,purge_date,choice_mode,submission_mode,result,result_source
+2,answered,offsite-2027,alice@example.org,2026-10-27T12:00:00Z,2026-11-24T12:00:00Z,multiple,editable,Thursday 14 January; Friday 15 January,answered
+3,unanswered,offsite-2027,bob@example.org,2026-10-27T12:00:00Z,2026-11-24T12:00:00Z,multiple,editable,,
+4,auto_fallback,offsite-2027,carol@example.org,2026-10-20T12:00:00Z,2026-11-17T12:00:00Z,multiple,editable,Friday 15 January,fallback
+```
+
+(Each line ends with CRLF.)
+
+### `ballot tally`
+
+Sums up the results of a Group's Ballots, by Option label. It sends the request of `list` (`GET /admin/ballots?group=…`) and counts in the client; the server has no tally endpoint. Without `--group` it covers all live Ballots.
+
+| Flag | Meaning |
+| ---- | ------- |
+| `--group <GROUP>` | Only Ballots in this Group (sent like `list --group`). |
+| `--csv` | Print the table as [CSV](#csv-output). Can't be combined with `--json`. |
+
+```text
+$ vota ballot tally --group offsite-2027
+Group: offsite-2027  Ballots: 5  Answered: 3  By Fallback: 1  Open: 1
+
+OPTION               ANSWERED  FALLBACK  TOTAL
+Friday 15 January           2         1      3
+Thursday 14 January         2         0      2
+Saturday 16 January         0         0      0
+(none)                      1         0      1
+
+Note: on multiple-choice Ballots each chosen Option counts once, so the totals can exceed the number of Ballots.
+```
+
+- **The header line** counts the Ballots: Answered (the result is the voter's Response), By Fallback (Auto-fallback), Open (no result yet: Unanswered, also after a deadline without a Fallback).
+- **Options are counted by label.** The same label on different Ballots is the same Option, whatever its ID; labels are compared exactly as stored (the server NFC-normalises them), so `Pizza` and `pizza` are two rows. Every Option of every Ballot in the Group gets a row, also one nobody chose (TOTAL `0`). ANSWERED counts the Responses that chose it, FALLBACK the applied Fallbacks that hold it, TOTAL is both.
+- **Order**: TOTAL descending, then label (in Unicode code point order).
+- **`(none)`**: a Response of no Option ([Allow No Option](admin-api.md#request-fields)) counts in the `(none)` row, which comes last. It is shown when a Ballot in the Group allows no Option or such a Response was counted. (An Option that is itself labelled `(none)` would look the same in this table; `--json` and `--csv` tell them apart.)
+- **Multiple choice**: each chosen Option counts once, so the totals can exceed the number of Ballots. The note below the table appears when the Group has a multiple-choice Ballot.
+- A Group without Ballots prints zeros and the table's header line; that is not an error.
+
+With `--json` it prints (each row of `options` is shown on one line here):
+
+```json
+{
+  "answered": 3,
+  "ballots": 5,
+  "fallback": 1,
+  "group": "offsite-2027",
+  "open": 1,
+  "options": [
+    { "answered": 2, "fallback": 1, "option": "Friday 15 January", "total": 3 },
+    { "answered": 2, "fallback": 0, "option": "Thursday 14 January", "total": 2 },
+    { "answered": 0, "fallback": 0, "option": "Saturday 16 January", "total": 0 },
+    { "answered": 1, "fallback": 0, "option": null, "total": 1 }
+  ]
+}
+```
+
+| Field | Meaning |
+| ----- | ------- |
+| `group` | The `--group` given (as typed, before the server's trimming and normalisation), or `null` for all live Ballots. |
+| `ballots`, `answered`, `fallback`, `open` | The header line's counts. |
+| `options` | The table's rows in its order: `option` is the label, or `null` for a Response of no Option; `answered`, `fallback` and `total` as in the table. |
+
+With `--csv` it prints the table as `option,answered,fallback,total`, the `option` cell empty for a Response of no Option (no Option has an empty label), without the header line and the note:
+
+```text
+$ vota ballot tally --group offsite-2027 --csv
+option,answered,fallback,total
+Friday 15 January,2,1,3
+Thursday 14 January,2,0,2
+Saturday 16 January,0,0,0
+,1,0,1
+```
+
+Its exit codes and connection flags are those of every `ballot` command. An answer it can't count (a result of an unknown source) is an unexpected answer (exit 1).
 
 ### `ballot edit`
 
@@ -684,12 +863,14 @@ Warning: --insecure: the server's TLS certificate is not verified; anyone on the
 
 ### Exit codes of `ballot`
 
+<!-- A test (src/cli/ballot/docs_drift.rs) compares this table with the code (src/cli/ballot/exit.rs): keep it right below this heading, one row per code, the code in backticks, the text as the code's in Markdown, every HTTP status in backticks. -->
+
 | Code | When |
 | ---- | ---- |
 | `0` | Success. |
-| `2` | Usage error: from clap (unknown or conflicting flags, a bad `--choice-mode`, `--submission-mode` or `--status` value), no Admin Token, no URL, a refused URL, an unreadable `--token-file`, `--description-file`, `--body` or `--ca-cert`, a `--body` that is not JSON, a date flag that is neither a timestamp nor a [relative date](#relative-dates) (or a `+` with nothing to be relative to), or `delete` without a terminal and without `--yes`. Nothing was sent. |
+| `2` | Usage error: from clap (unknown or conflicting flags such as `--csv` with `--json`, a bad `--choice-mode`, `--submission-mode` or `--status` value), no Admin Token, no URL, a refused URL, an unreadable `--token-file`, `--description-file`, `--body`, `--voters` or `--ca-cert`, a `--body` that is not JSON, `--voter-reference` more than once on `edit`, `--qr` when creating many Ballots, a date flag that is neither a timestamp nor a [relative date](#relative-dates) (or a `+` with nothing to be relative to), or `delete` without a terminal and without `--yes`. Nothing was sent. |
 | `3` | `404`: no live Ballot with this ID (or a wrong `--url`). |
-| `4` | `409`: the Ballot can't be edited now, or the Voter Reference is taken in the Group. |
+| `4` | `409`: the Ballot can't be edited now, or a Voter Reference is taken in the Group (or `--count` can't number on). |
 | `5` | `400`, `413`, `415` or `422`: the server refused the request's content. |
 | `6` | `401` or `429`: the Admin Token was refused, or this client's address is locked out for a while. |
 | `7` | Network error, TLS error or timeout: no answer arrived. |

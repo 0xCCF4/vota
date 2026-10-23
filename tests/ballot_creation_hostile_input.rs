@@ -485,16 +485,25 @@ async fn hostile_groups_and_voter_references_are_rejected() {
 async fn group_and_voter_reference_of_wrong_type_or_null_are_rejected() {
     let app = TestApp::new().await;
     for field in ["group", "voter_reference"] {
-        for value in [
-            json!(null),
-            json!(42),
-            json!(true),
-            json!(["a"]),
-            json!({ "a": 1 }),
-        ] {
+        for value in [json!(null), json!(42), json!(true), json!({ "a": 1 })] {
             assert_rejected(&app, &with(field, value), field).await;
         }
     }
+    // A list is a bulk creation for `voter_reference` (tests/bulk_creation.rs),
+    // but not a Group; a list of non-strings is neither.
+    assert_rejected(&app, &with("group", json!(["a"])), "group").await;
+    assert_rejected(
+        &app,
+        &with("voter_reference", json!([1])),
+        "voter_reference",
+    )
+    .await;
+    assert_rejected(
+        &app,
+        &with("voter_reference", json!([null])),
+        "voter_reference",
+    )
+    .await;
 }
 
 #[tokio::test]

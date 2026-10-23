@@ -17,7 +17,7 @@ A hidden identification string that the admin attaches to a Ballot to know who i
 _Avoid_: Hidden ID, identification field
 
 **Group**:
-An optional free-text label the admin attaches to several Ballots so their Responses can be fetched together, e.g. all Ballots of one survey. Ballots in a Group stay independent.
+An optional free-text label the admin attaches to several Ballots so their Responses can be fetched and tallied together, e.g. all Ballots of one survey. Ballots in a Group stay independent.
 _Avoid_: Survey, campaign, batch
 
 **Theme**:

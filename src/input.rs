@@ -69,6 +69,12 @@
 //!   creation or on edit must lie in the future and not before the
 //!   (resulting) Voting Deadline; both, when given, no later than now plus
 //!   the configured `max_date_horizon` ([`DateBounds`]);
+//! - bulk creation (`POST /admin/ballots`): `voter_reference` may be a
+//!   list of 1 to 1000 Voter References, each sanitized like one, without
+//!   duplicates after normalisation (`voter_reference[i]`); a longer list is
+//!   refused before its entries are sanitized. `count` is an integer from 1
+//!   to 1000 and needs a `group` and no `voter_reference`; the rules live in
+//!   `domain::bulk`;
 //! - admin edits (`PATCH`): any subset of the creation fields plus
 //!   `purge_date`; absent keeps the current value; `null` is rejected except
 //!   for `description`, `fallback`, `group`, `voter_reference`,

@@ -93,7 +93,7 @@ Admin Tokens, Ballot Tokens, Voter References and request bodies are never logge
 
 ## `POST /admin/ballots`: create a Ballot
 
-Creates one Ballot and answers `201 Created` with its [admin view](#the-admin-view-of-a-ballot), which includes the Ballot Token and the public `url` to hand to the voter.
+Creates one Ballot and answers `201 Created` with its [admin view](#the-admin-view-of-a-ballot), which includes the Ballot Token and the public `url` to hand to the voter. It can also create [many Ballots at once](#many-ballots-at-once), one per Voter Reference.
 
 ### Request fields
 
@@ -109,7 +109,8 @@ Creates one Ballot and answers `201 Created` with its [admin view](#the-admin-vi
 | `purge_date`      | [timestamp](#conventions) string | no       | `voting_deadline` + [`default_purge_gap`](configuration.md#default_purge_gap) (4 weeks) | If given: in the future, no later than now + `max_date_horizon`, and not before `voting_deadline` (equal is allowed). The computed default is not capped by the horizon. |
 | `fallback`        | array of strings         | no       | no Fallback                                     | **Option labels**, not IDs: the Options get their IDs only now. Each label is normalised like an Option label and must match one of this Ballot's Options. No duplicates. Must obey the Choice Mode: exactly one label for single choice, one or more for multiple choice. `[]` is rejected. |
 | `group`           | string                   | no       | none                                            | Single-line text, 1–200 characters. |
-| `voter_reference` | string                   | no       | none                                            | Single-line text, 1–200 characters. Unique within its Group: a second Ballot with the same Group and Voter Reference is a `409`. Without a Group it is not constrained. |
+| `voter_reference` | string, or array of strings | no    | none                                            | Single-line text, 1–200 characters. Unique within its Group: a second Ballot with the same Group and Voter Reference is a `409`. Without a Group it is not constrained. An array creates [many Ballots](#many-ballots-at-once), one per entry. |
+| `count`           | integer                  | no       | none                                            | Creates [this many Ballots](#many-ballots-at-once) with numbered Voter References, 1 to 1000. Needs a `group`; not together with `voter_reference`. |
 | `theme`           | string                   | no       | `"classic"`                                     | `^[a-z0-9][a-z0-9-]{0,63}$`, exact match, and a Theme of that name must exist (built-in or in the theme folder). |
 | `accent_color`    | string                   | no       | none (the Theme's own accent)                   | `#rrggbb`, exactly `^#[0-9a-fA-F]{6}$`. Stored lowercase. |
 | `logo`            | string                   | no       | none                                            | Same name rule as `theme`. A logo of that name must exist in the logo folder. |
@@ -235,6 +236,50 @@ curl -s -X POST http://localhost:8080/admin/ballots \
 ```
 
 Because of this rule, a creation script that sets a Group and a Voter Reference on every Ballot is safe to re-run: Ballots that already exist give `409`, and no duplicate is created.
+
+### Many Ballots at once
+
+One request can create up to 1000 Ballots that are alike but for their Voter References. Each gets its own ID, Ballot Token, `url` and Option IDs. There are two forms:
+
+- **A list**: `"voter_reference": ["alice", "bob", "carol"]` creates one Ballot per entry, in this order. Each entry follows the rules of a single Voter Reference. The list must hold 1 to 1000 entries and no entry twice (compared after normalisation, like stored ones). A Group is optional, as for one Ballot.
+- **A count**: `"count": 3` with a `group` creates 3 Ballots whose Voter References are plain numbers, continuing after the highest purely numeric Voter Reference in the Group. `count` must be 1 to 1000, needs a `group`, and can't be combined with `voter_reference` (string or list).
+
+**Numbering.** A Voter Reference is *purely numeric* when it consists of one or more ASCII digits `0`–`9` and nothing else: no sign, space, separator, decimal point, exponent or digits of another script (`-5`, `+5`, `1e9`, `１２` and `٣` are not numeric). Its number is its decimal value, so leading zeros don't count (`007` is 7). The highest such number among the Group's live Ballots is *n* (0 if there is none); the new Voter References are `n+1`, `n+2`, … written in plain decimal without leading zeros. Other Groups, and Ballots past their Purge Date, don't count. Example: a Group holding `3`, `007`, `12`, `alice` and `99a` gets `13`, `14` from `"count": 2`. The numbers can't clash with existing Voter References. Numbers stop at 18446744073709551615 (2⁶⁴−1): a Group whose numbering would pass it gets `409 numbering_exhausted`.
+
+**All or nothing.** The Ballots are created in one database transaction. If any listed Voter Reference is already taken by a live Ballot in the Group, nothing is created, and the `409 duplicate_voter_reference` names all of them in `voter_references`, in the order of the request:
+
+```json
+{
+  "error": "duplicate_voter_reference",
+  "message": "another Ballot in this Group already has this Voter Reference",
+  "voter_references": ["carol@example.org", "alice@example.org"]
+}
+```
+
+A `422` for any field (for example `voter_reference[2]`: `duplicate Voter Reference`) also creates nothing.
+
+**Answer.** The shape follows the request's form: a string `voter_reference` (or none) answers with the single admin view as above; a list or a `count` answers `201 Created` with `{"ballots": [...]}`, the admin view of each new Ballot in order, even for a list of one:
+
+```sh
+curl -s -X POST http://localhost:8080/admin/ballots \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"title": "Room booking", "options": [{"label": "Yes"}, {"label": "No"}], "voting_deadline": "2026-12-01T12:00:00Z", "group": "parking", "count": 2}'
+```
+
+```json
+{
+  "ballots": [
+    { "id": 9, "group": "parking", "voter_reference": "1", "token": "bngbdaaJHVo9VV01r4_SkA", "url": "http://localhost:8080/b/bngbdaaJHVo9VV01r4_SkA", … },
+    { "id": 10, "group": "parking", "voter_reference": "2", "token": "HiqbocnI4J3rB3ylDE6yvQ", "url": "http://localhost:8080/b/HiqbocnI4J3rB3ylDE6yvQ", … }
+  ]
+}
+```
+
+(Shortened, so not valid JSON as shown: each entry is the full admin view, with every key of a single create's answer.)
+
+**Body size.** The [64 KiB body limit](#errors) applies as to any request. 1000 Voter References of up to about 50 characters fit; for longer ones, send the list in several requests (each is all or nothing on its own), or use `count`.
+
+The CLI sends these forms with a repeated [`--voter-reference`, `--voters FILE` or `--count N`](cli.md#many-ballots-at-once).
 
 ## `GET /admin/ballots/{id}`: fetch one Ballot
 
@@ -413,7 +458,7 @@ Deleting again, or deleting a purged Ballot, gives `404 {"error":"not_found"}`.
 
 ## `GET /admin/ballots`: list Ballots with results
 
-Lists every matching live Ballot in creation order (internal ID ascending), each in the full [admin view](#the-admin-view-of-a-ballot) with its raw result. There is no pagination and no tally across Ballots.
+Lists every matching live Ballot in creation order (internal ID ascending), each in the full [admin view](#the-admin-view-of-a-ballot) with its raw result. There is no pagination and no tally across Ballots: [`vota ballot tally`](cli.md#ballot-tally) sums one up in the client from this list, and [`vota ballot list --csv`](cli.md#ballot-list) exports it as CSV.
 
 | Query parameter | Rules |
 | --------------- | ----- |
@@ -512,7 +557,8 @@ Every successful Ballot response (create, fetch, edit, extend, and each list ent
 | `405` | empty, with `Allow` header | Wrong method on a known path, e.g. `PUT /admin/ballots/1`. |
 | `409` | `{"error":"already_answered","message":"this Ballot has a Response; it can no longer be edited"}` | Content edit of a Ballot that has a Response. (The [voter API](voter-api.md) uses the same code with its own message, `this Ballot already has a Response, which can't be changed`.) |
 | `409` | `{"error":"fallback_applied","message":"the Fallback of this Ballot has applied; extend the Voting Deadline to edit it again"}` | Content edit of an Auto-fallback Ballot (deadline passed without a Response, Fallback applied). |
-| `409` | `{"error":"duplicate_voter_reference","message":"another Ballot in this Group already has this Voter Reference"}` | Create or edit would give two live Ballots in one Group the same Voter Reference. |
+| `409` | `{"error":"duplicate_voter_reference","message":"another Ballot in this Group already has this Voter Reference"}` | Create or edit would give two live Ballots in one Group the same Voter Reference. A [bulk create](#many-ballots-at-once) adds `"voter_references"`, the list of the request's Voter References that are taken. |
+| `409` | `{"error":"numbering_exhausted","message":"the Group's numeric Voter References are too large to number on"}` | A create with `count` whose numbers would pass 2⁶⁴−1 ([numbering](#many-ballots-at-once)). |
 | `413` | `Failed to buffer the request body: length limit exceeded` (text/plain) | Body over 64 KiB. |
 | `415` | empty | `Content-Type` is not `application/json`. |
 | `422` | `{"error":"invalid_json","message":"the request body is not valid JSON"}` | The body is not valid JSON: truncated, empty, not UTF-8, or trailing data after the object (see below). |
@@ -552,6 +598,9 @@ Valid JSON of the wrong shape (a wrong type, an unknown or missing field, `[]` i
 | `too long` | text fields (200 characters; `description` 10 000) |
 | `at least two Options are required` | `options` |
 | `duplicate Option label` | `options[i].label` |
+| `at least one Voter Reference is required` / `at most 1000 Voter References per request` | `voter_reference` (a list) |
+| `duplicate Voter Reference` | `voter_reference[i]` (a list) |
+| `must be at least 1` / `at most 1000 Ballots per request` / `requires a group` / `can't be combined with voter_reference` | `count` |
 | `not an Option of this Ballot` / `duplicate Option` | `fallback[i]` |
 | `select an Option` / `single choice: select exactly one Option` | `fallback` |
 | `the Fallback's Options are no longer all Options of this Ballot; give the Fallback again` | `fallback` (edit) |

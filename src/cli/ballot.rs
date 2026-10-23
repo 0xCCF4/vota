@@ -6,8 +6,15 @@
 
 mod body;
 mod connection;
+mod csv;
 mod dates;
+#[cfg(test)]
+mod docs_drift;
+mod exit;
+#[cfg(feature = "qr")]
+mod qr;
 mod render;
+mod tally;
 
 use std::io::{IsTerminal as _, Read as _};
 use std::path::{Path, PathBuf};
@@ -17,17 +24,19 @@ use clap::{Subcommand, ValueEnum};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use reqwest::Method;
 
-use super::escape::{escape_json, printable};
+use super::escape::{escape_json, printable, printable_lines};
 use body::{Clears, Fields};
 use connection::{Connection, ConnectionArgs};
 use dates::{Dates, Verb};
+pub(super) use exit::Exit;
 
 #[derive(clap::Args)]
 pub(super) struct BallotArgs {
     #[command(flatten)]
     connection: ConnectionArgs,
     /// Print the server's JSON answer (pretty-printed) on stdout instead of
-    /// the readable output; on an error, its body too.
+    /// the readable output (`tally`: its own JSON summary); on an error,
+    /// the server's error body too.
     #[arg(long, global = true, help_heading = "Output")]
     json: bool,
     #[command(subcommand)]
@@ -36,7 +45,9 @@ pub(super) struct BallotArgs {
 
 #[derive(Subcommand)]
 enum BallotCommand {
-    /// Create a Ballot (POST /admin/ballots) and print its URL.
+    /// Create a Ballot (POST /admin/ballots) and print its URL; or many
+    /// at once, one per Voter Reference (repeated --voter-reference,
+    /// --voters, --count), and print a table of their URLs.
     Create {
         #[command(flatten)]
         fields: Fields,
@@ -49,11 +60,46 @@ enum BallotCommand {
             help_heading = "Ballot fields"
         )]
         body: Option<PathBuf>,
+        /// Create one Ballot per Voter Reference in this file (`-`: stdin):
+        /// one per line, surrounding whitespace trimmed, empty lines and
+        /// lines starting with `#` skipped. All or none are created.
+        #[arg(
+            long,
+            value_name = "FILE|-",
+            conflicts_with_all = ["voter_reference", "count", "body"],
+            help_heading = "Many Ballots"
+        )]
+        voters: Option<PathBuf>,
+        /// Create this many Ballots (at most 1000) in the --group, numbered:
+        /// their Voter References are 1, 2, … after the Group's highest
+        /// purely numeric Voter Reference.
+        #[arg(
+            long,
+            value_name = "N",
+            conflicts_with_all = ["voter_reference", "body"],
+            help_heading = "Many Ballots"
+        )]
+        count: Option<i64>,
+        /// Print the created Ballots as CSV on stdout: `voter_reference,id,url`
+        /// (RFC 4180, CRLF line ends; a value starting with =, +, -, @, tab
+        /// or CR gets a `'` in front against formula injection).
+        #[arg(long, conflicts_with = "json", help_heading = "Output")]
+        csv: bool,
+        /// Also draw the Ballot's URL as a QR code on stderr, the URL below
+        /// it. Not with many Ballots.
+        #[cfg(feature = "qr")]
+        #[arg(long, help_heading = "Output")]
+        qr: bool,
     },
     /// Show one Ballot (GET /admin/ballots/{id}).
     Get {
         /// The Ballot's ID.
         id: u64,
+        /// Also draw the Ballot's URL as a QR code on stderr, the URL below
+        /// it.
+        #[cfg(feature = "qr")]
+        #[arg(long, help_heading = "Output")]
+        qr: bool,
     },
     /// List Ballots with their results (GET /admin/ballots).
     List {
@@ -63,6 +109,21 @@ enum BallotCommand {
         /// Only Ballots with this Ballot Status.
         #[arg(long, value_enum)]
         status: Option<Status>,
+        /// Print the list as CSV (RFC 4180, CRLF), one record per Ballot,
+        /// without URLs or Ballot Tokens.
+        #[arg(long, conflicts_with = "json")]
+        csv: bool,
+    },
+    /// Sum up the results of a Group's Ballots by Option label (from GET
+    /// /admin/ballots).
+    Tally {
+        /// Only Ballots in this Group; without it, all live Ballots.
+        #[arg(long)]
+        group: Option<String>,
+        /// Print the table as CSV (RFC 4180, CRLF):
+        /// option,answered,fallback,total.
+        #[arg(long, conflicts_with = "json")]
+        csv: bool,
     },
     /// Edit a Ballot (PATCH /admin/ballots/{id}). Fields without a flag
     /// keep their values.
@@ -88,14 +149,18 @@ enum BallotCommand {
     Extend {
         /// The Ballot's ID.
         id: u64,
-        /// The new Voting Deadline: RFC 3339, or without an offset local
-        /// time in the server's default time zone; a duration from now
-        /// (`3d`); or `+` and a duration after the current one (`+1d`,
-        /// `+1m`). Units, combined without spaces (`2d12h`): min
-        /// (minutes), h (hours), d (days), w (weeks), m (calendar months),
-        /// y (years). Note: `m` is months here, unlike in the server's
-        /// configuration.
-        #[arg(long, value_name = "DATETIME|DURATION|+DURATION", required = true)]
+        // The units from `dates`, so not a doc comment.
+        #[arg(
+            long,
+            value_name = "DATETIME|DURATION|+DURATION",
+            required = true,
+            help = format!(
+                "The new Voting Deadline: RFC 3339, or without an offset local time in the \
+                 server's default time zone; a duration from now (`3d`); or `+` and a \
+                 duration after the current one (`+1d`, `+1m`). {}",
+                dates::units_help()
+            )
+        )]
         voting_deadline: String,
     },
     /// Delete a Ballot with its Response (DELETE /admin/ballots/{id}). In a
@@ -121,13 +186,13 @@ enum Status {
 /// Why a command failed: the message for stderr, the exit code, and for an
 /// error answer the body to print on stdout with `--json`.
 pub(super) struct Failure {
-    exit: u8,
+    exit: Exit,
     message: String,
     body: Option<String>,
 }
 
 impl Failure {
-    fn new(exit: u8, message: impl Into<String>) -> Self {
+    fn new(exit: Exit, message: impl Into<String>) -> Self {
         Self {
             exit,
             message: message.into(),
@@ -137,7 +202,7 @@ impl Failure {
 
     /// A usage error: exit 2, like clap's own.
     fn usage(message: impl Into<String>) -> Self {
-        Self::new(2, message)
+        Self::new(Exit::Usage, message)
     }
 }
 
@@ -147,13 +212,13 @@ impl BallotArgs {
     pub(super) async fn run(self) -> ExitCode {
         let json = self.json;
         match self.execute().await {
-            Ok(()) => ExitCode::SUCCESS,
+            Ok(()) => Exit::Success.into(),
             Err(failure) => {
                 if json && let Some(body) = &failure.body {
                     println!("{body}");
                 }
                 eprintln!("Error: {}", failure.message);
-                ExitCode::from(failure.exit)
+                failure.exit.into()
             }
         }
     }
@@ -170,46 +235,96 @@ impl BallotArgs {
             }
         };
         match self.command {
-            BallotCommand::Create { mut fields, body } => {
+            BallotCommand::Create {
+                mut fields,
+                body,
+                voters,
+                count,
+                csv,
+                #[cfg(feature = "qr")]
+                qr,
+            } => {
+                let bulk = match (voters, count) {
+                    (Some(path), _) => Some(body::Bulk::Voters(body::voters(&path)?)),
+                    (None, Some(count)) => Some(body::Bulk::Count(count)),
+                    (None, None) => None,
+                };
                 let body = match body {
                     Some(path) => body::raw(&path)?,
                     None => {
                         let (deadline, purge_date) = fields.dates_mut();
                         resolve_dates(&connection, Verb::Create, deadline, purge_date).await?;
-                        fields.into_body(None)?
+                        fields.into_body(None, bulk)?
                     }
                 };
-                let ballot = connection
+                // Whether from the flags or from --body.
+                #[cfg(feature = "qr")]
+                refuse_bulk_qr(qr, body::is_bulk_body(&body))?;
+                let answer = connection
                     .send(Method::POST, "admin/ballots", Some(body))
-                    .await?
+                    .await
+                    .map_err(with_taken_references)?
                     .unwrap_or_default();
+                let many = answer.get("ballots").is_some();
                 if json {
-                    println!("{}", json_text(&ballot));
+                    println!("{}", json_text(&answer));
+                } else if csv {
+                    print!("{}", render::created_csv(&answer));
+                } else if many {
+                    print!("{}", render::created_table(&answer));
                 } else {
-                    println!("{}", render::text(&ballot, "url"));
-                    eprint!("{}", render::created(&ballot));
+                    println!("{}", render::text(&answer, "url"));
+                }
+                if !json {
+                    if many {
+                        eprint!("{}", render::created_many(&answer));
+                    } else {
+                        eprint!("{}", render::created(&answer));
+                    }
+                }
+                #[cfg(feature = "qr")]
+                if qr && !many {
+                    eprint!("{}", draw_qr(&answer)?);
                 }
             }
-            BallotCommand::Get { id } => {
+            BallotCommand::Get {
+                id,
+                #[cfg(feature = "qr")]
+                qr,
+            } => {
                 let reply = connection
                     .send(Method::GET, &format!("admin/ballots/{id}"), None)
                     .await?;
+                #[cfg(feature = "qr")]
+                let code = match (&reply, qr) {
+                    (Some(ballot), true) => Some(draw_qr(ballot)?),
+                    _ => None,
+                };
                 show(reply, render::ballot);
+                #[cfg(feature = "qr")]
+                if let Some(code) = code {
+                    eprint!("{code}");
+                }
             }
-            BallotCommand::List { group, status } => {
-                let mut query = Vec::new();
-                if let Some(group) = group {
-                    query.push(format!("group={}", encode(&group)));
-                }
-                if let Some(status) = status {
-                    query.push(format!("status={}", enum_name(status)));
-                }
-                let mut path = "admin/ballots".to_owned();
-                if !query.is_empty() {
-                    path = format!("{path}?{}", query.join("&"));
-                }
+            BallotCommand::List { group, status, csv } => {
+                let path = list_path(group.as_deref(), status);
                 let reply = connection.send(Method::GET, &path, None).await?;
-                show(reply, render::table);
+                show(reply, if csv { render::list_csv } else { render::table });
+            }
+            BallotCommand::Tally { group, csv } => {
+                let path = list_path(group.as_deref(), None);
+                let list = connection
+                    .send(Method::GET, &path, None)
+                    .await?
+                    .unwrap_or_default();
+                let tally = tally::Tally::of(&list, group)?;
+                if json {
+                    println!("{}", json_text(&tally.json()));
+                } else if csv {
+                    print!("{}", tally.csv());
+                } else {
+                    print!("{}", tally.text());
+                }
             }
             BallotCommand::Edit {
                 id,
@@ -222,7 +337,7 @@ impl BallotArgs {
                     None => {
                         let (deadline, purge_date) = fields.dates_mut();
                         resolve_dates(&connection, Verb::Edit(id), deadline, purge_date).await?;
-                        fields.into_body(Some(clears))?
+                        fields.into_body(Some(clears), None)?
                     }
                 };
                 let reply = connection
@@ -268,6 +383,45 @@ impl BallotArgs {
     }
 }
 
+/// `--qr` with many Ballots: a usage error, before anything is sent.
+#[cfg(feature = "qr")]
+fn refuse_bulk_qr(qr: bool, is_bulk: bool) -> Result<(), Failure> {
+    if qr && is_bulk {
+        return Err(Failure::usage(
+            "--qr draws a single Ballot's URL; it can't be used when creating many Ballots",
+        ));
+    }
+    Ok(())
+}
+
+/// The QR code of the Ballot's `url`, with the URL below it.
+#[cfg(feature = "qr")]
+fn draw_qr(ballot: &serde_json::Value) -> Result<String, Failure> {
+    let url = ballot["url"]
+        .as_str()
+        .ok_or_else(|| Failure::new(Exit::Other, "unexpected response: a Ballot without a url"))?;
+    qr::code(url)
+}
+
+/// A refused bulk create names the Voter References that are taken
+/// (`voter_references` of the 409 answer) in the message too.
+fn with_taken_references(mut failure: Failure) -> Failure {
+    let answer: Option<serde_json::Value> =
+        (failure.body.as_deref()).and_then(|body| serde_json::from_str(body).ok());
+    let taken: Vec<String> = (answer.iter())
+        .filter_map(|answer| answer["voter_references"].as_array())
+        .flatten()
+        .map(|reference| match reference.as_str() {
+            Some(reference) => printable(reference),
+            None => printable(&reference.to_string()),
+        })
+        .collect();
+    if !taken.is_empty() {
+        failure.message += &format!(" (taken: {})", taken.join(", "));
+    }
+    failure
+}
+
 /// Replaces relative values of the date flags (`3d`, `+7d`) with the UTC
 /// timestamps they name, and says so on stderr. A `+` relative to the
 /// Ballot's current Voting Deadline fetches the Ballot first.
@@ -307,7 +461,7 @@ async fn current_deadline(
         .and_then(|deadline| deadline.parse().ok())
         .ok_or_else(|| {
             Failure::new(
-                1,
+                Exit::Other,
                 format!("unexpected response: Ballot {id} without a voting_deadline timestamp"),
             )
         })
@@ -334,11 +488,30 @@ async fn confirm_delete(connection: &Connection, id: u64) -> Result<(), Failure>
     let mut answer = String::new();
     std::io::stdin()
         .read_line(&mut answer)
-        .map_err(|error| Failure::new(1, format!("can't read the answer: {error}")))?;
+        .map_err(|error| Failure::new(Exit::Other, format!("can't read the answer: {error}")))?;
     match answer.trim().to_ascii_lowercase().as_str() {
         "y" | "yes" => Ok(()),
-        _ => Err(Failure::new(1, format!("Ballot {id} was not deleted"))),
+        _ => Err(Failure::new(
+            Exit::Other,
+            format!("Ballot {id} was not deleted"),
+        )),
     }
+}
+
+/// The path of `GET /admin/ballots` with these filters.
+fn list_path(group: Option<&str>, status: Option<Status>) -> String {
+    let mut query = Vec::new();
+    if let Some(group) = group {
+        query.push(format!("group={}", encode(group)));
+    }
+    if let Some(status) = status {
+        query.push(format!("status={}", enum_name(status)));
+    }
+    let mut path = "admin/ballots".to_owned();
+    if !query.is_empty() {
+        path = format!("{path}?{}", query.join("&"));
+    }
+    path
 }
 
 /// `value` percent-encoded for a query string.

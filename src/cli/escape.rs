@@ -7,9 +7,22 @@ use crate::input;
 /// `text` with every character that free text may not contain (controls,
 /// bidi and other invisible ones, newline and tab) written as `\u{…}`.
 pub(super) fn printable(text: &str) -> String {
+    escape_unprintable(text, |_| false)
+}
+
+/// Like [`printable`], but keeps line feeds and tabs: for CSV cells, where
+/// a quoted cell may span lines.
+#[cfg(feature = "client")]
+pub(super) fn printable_lines(text: &str) -> String {
+    escape_unprintable(text, |c| c == '\n' || c == '\t')
+}
+
+/// `text` with every unprintable character but those `keep` accepts
+/// written as `\u{…}`.
+fn escape_unprintable(text: &str, keep: impl Fn(char) -> bool) -> String {
     text.chars()
         .map(|c| {
-            if input::is_unprintable(c) {
+            if input::is_unprintable(c) && !keep(c) {
                 format!("\\u{{{:x}}}", u32::from(c))
             } else {
                 c.to_string()

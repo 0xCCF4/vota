@@ -32,6 +32,7 @@ clap = { version = "4.6.7", features = ["derive", "env"] }
 clap_complete = "4.6.11"
 clap_complete_nushell = "4.6.2"
 clap_mangen = "0.3.3"
+csv = { version = "1.4.0", optional = true }
 figment = { version = "0.10.19", features = ["toml", "env"], optional = true }
 getrandom = { version = "0.4.3", optional = true }
 humantime = { version = "2.4.0", optional = true }
@@ -42,6 +43,7 @@ icu_properties = { version = "2.3.0", optional = true }
 ipnet = { version = "2.12.2", features = ["serde"], optional = true }
 minijinja = { version = "3.0.1", features = ["serde"], optional = true }
 percent-encoding = { version = "2.3.2", optional = true }
+qrcode = { version = "0.14.1", default-features = false, optional = true }
 pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"], optional = true }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls"], optional = true }
 serde = { version = "1.0.229", features = ["derive"], optional = true }
@@ -58,7 +60,7 @@ untrusted_value = { version = "0.3.2", optional = true }
 url = { version = "2.5.8", features = ["serde"], optional = true }
 
 [features]
-default = ["server", "client"]
+default = ["server", "client", "qr"]
 # `vota serve` and `vota admin-token …`: the web server, the database, and
 # their dependencies. `--no-default-features --features client` builds a
 # client-only binary.
@@ -96,6 +98,7 @@ server = [
 # `--no-default-features --features server` builds a server-only binary.
 client = [
     "dep:chrono",
+    "dep:csv",
     "dep:humantime",
     "dep:icu_properties",
     "dep:percent-encoding",
@@ -104,6 +107,10 @@ client = [
     "dep:serde_json",
     "dep:url",
 ]
+# `vota ballot create --qr` and `vota ballot get --qr`: the Ballot URL as a
+# terminal QR code. `--no-default-features --features client` builds a
+# client without it.
+qr = ["client", "dep:qrcode"]
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.5", features = ["fs", "process"], optional = true }

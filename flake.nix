@@ -58,7 +58,9 @@
           );
           src = lib.fileset.toSource {
             root = ./.;
-            fileset = lib.fileset.difference ./. excluded;
+            # The CLI reference is kept: a test (src/cli/ballot/docs_drift.rs)
+            # compares its exit codes and date units with the code.
+            fileset = lib.fileset.union (lib.fileset.difference ./. excluded) ./docs/reference/cli.md;
           };
           votaArgs = {
             pname = "vota";
@@ -97,14 +99,15 @@
             # Only the admin API client (`vota ballot …`), `completions` and
             # `man` (with the pages and completions of these commands),
             # for hosts that manage Ballots on a server elsewhere: cargo
-            # feature `client` without `server`, so no database or web server.
+            # features `client` and `qr` (`--qr`) without `server`, so no
+            # database or web server.
             # Its checkPhase runs the tests of that build.
             vota-client = pkgs.rustPlatform.buildRustPackage (
               votaArgs
               // {
                 pname = "vota-client";
                 buildNoDefaultFeatures = true;
-                buildFeatures = [ "client" ];
+                buildFeatures = [ "qr" ];
                 meta = votaArgs.meta // {
                   description = "The admin API client of Vota (vota ballot), without the server";
                 };

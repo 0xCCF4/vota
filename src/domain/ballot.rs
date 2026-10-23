@@ -127,6 +127,12 @@ impl VoterReference {
         Self(text)
     }
 
+    /// A numbered Voter Reference of bulk creation: `n` in plain decimal,
+    /// which is valid single-line text by construction.
+    pub(crate) fn numbered(n: u64) -> Self {
+        Self(n.to_string())
+    }
+
     /// A value read back from the Ballot store, which only ever holds
     /// sanitized ones.
     pub(crate) fn from_store(text: String) -> Self {

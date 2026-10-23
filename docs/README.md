@@ -15,7 +15,7 @@ Start with the [README](../README.md) for a quickstart. Developers should read [
 
 - [Admin API](reference/admin-api.md): every endpoint, field and error.
 - [Voter API and voting page](reference/voter-api.md): the JSON API and the no-JS form flow.
-- [CLI](reference/cli.md): `serve`, `admin-token create/list/revoke/generate`, the admin API client `ballot create/get/list/edit/extend/delete` with relative dates, `completions` and `man`.
+- [CLI](reference/cli.md): `serve`, `admin-token create/list/revoke/generate`, the admin API client `ballot create/get/list/tally/edit/extend/delete` with relative dates, bulk create, CSV export and QR codes, `completions` and `man`.
 - [Configuration](reference/configuration.md): every option, its TOML key and `VOTA_*` variable.
 
 ## Guides

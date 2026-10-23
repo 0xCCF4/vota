@@ -36,11 +36,13 @@ jobs:
         rustalias: [ stable, nightly ]
         # Vota: frostx tests only the default features. Every combination of
         # the `server` and `client` features must build and pass its tests:
-        # both (the default), server only, client only, neither.
+        # both (the default, with `qr`), server only, client only (with and
+        # without `qr`), neither.
         feature_flag:
           - ""
           - "--no-default-features --features server"
           - "--no-default-features --features client"
+          - "--no-default-features --features client,qr"
           - "--no-default-features"
         include:
           - rustalias: stable
@@ -140,13 +142,15 @@ jobs:
     strategy:
       matrix:
         # Vota: clippy and docs also with all features and with each
-        # combination of the `server` and `client` features (as in
-        # build_and_test). The repo's rule is that every variant is clean.
+        # combination of the `server` and `client` features, and the client
+        # with and without `qr` (as in build_and_test). The repo's rule is
+        # that every variant is clean.
         feature_flag:
           - ""
           - "--all-features"
           - "--no-default-features --features server"
           - "--no-default-features --features client"
+          - "--no-default-features --features client,qr"
           - "--no-default-features"
     runs-on: ubuntu-latest
     name: 'Style and docs ${{ matrix.feature_flag }}'
