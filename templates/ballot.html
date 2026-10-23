@@ -13,6 +13,8 @@
     <p class="deadline">Closes <time datetime="{{ deadline_utc }}">{{ deadline_local }}</time><span class="vota-countdown" role="timer"></span></p>
     {% if read_only %}
     <p class="recorded">Your answer has been recorded.</p>
+    {% elif editable and preselected %}
+    <p class="submission-mode recorded preselected">Preselected for you. You can change it until voting closes.</p>
     {% elif editable and answered %}
     <p class="submission-mode recorded">Your answer is saved. You can change it until then.</p>
     {% elif editable %}
@@ -29,7 +31,14 @@
 {% endif %}
 {% if closed and answered %}
 <div class="outcome">
-  {% if selected %}
+  {% if preselected %}
+  <p class="closed">You kept the preselection, so this was recorded:</p>
+  <ul class="selection">
+    {% for option in selected %}
+    <li>{{ option.label }}</li>
+    {% endfor %}
+  </ul>
+  {% elif selected %}
   <p class="closed">You chose</p>
   <ul class="selection">
     {% for option in selected %}
@@ -76,6 +85,9 @@
     {% else %}
     <legend>Choose one option</legend>
     {% endif %}
+    {% if preselected and not editable %}
+    <p class="preselection-hint">Preselected; confirm or change, then submit.</p>
+    {% endif %}
     {% if upcoming_fallback %}
     <p class="fallback" id="fallback-hint">No answer by the deadline? The {% if upcoming_fallback|length > 1 %}Options{% else %}Option{% endif %} marked <span class="fallback-badge">default</span> will be recorded.</p>
     {% endif %}
@@ -99,7 +111,7 @@
     {% if not editable %}
     <p class="submission-mode final">Once you submit your answer, you cannot change it.</p>
     <button type="submit">Continue</button>
-    {% elif answered %}
+    {% elif answered and not preselected %}
     <button type="submit">Change answer</button>
     {% else %}
     <button type="submit">Save answer</button>

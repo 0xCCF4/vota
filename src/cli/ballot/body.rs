@@ -66,6 +66,12 @@ pub(super) struct Fields {
     /// An Option's label for the Fallback; repeat it for more than one.
     #[arg(long = "fallback", value_name = "LABEL")]
     fallback: Vec<String>,
+    /// An Option's label for the Preselection, ticked on the voting page;
+    /// repeat it for more than one. On an editable Ballot it is recorded
+    /// as the Response at once (the voter can change it until the
+    /// deadline); on a final one the voter still submits and confirms.
+    #[arg(long = "preselect", value_name = "LABEL")]
+    preselection: Vec<String>,
     /// Group.
     #[arg(long)]
     group: Option<String>,
@@ -138,6 +144,10 @@ pub(super) struct Clears {
     /// Remove the Fallback.
     #[arg(long, conflicts_with = "fallback")]
     clear_fallback: bool,
+    /// Remove the Preselection (and, on an editable Ballot the voter
+    /// hasn't answered, the Response recorded from it).
+    #[arg(long, conflicts_with = "preselection")]
+    clear_preselection: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -208,6 +218,10 @@ impl Fields {
             "fallback",
             (!self.fallback.is_empty()).then(|| self.fallback.into()),
         );
+        put(
+            "preselection",
+            (!self.preselection.is_empty()).then(|| self.preselection.into()),
+        );
         put("group", self.group.map(Value::from));
         put(
             "voter_reference",
@@ -233,6 +247,7 @@ impl Fields {
                 ("accent_color", clears.clear_accent_color),
                 ("logo", clears.clear_logo),
                 ("fallback", clears.clear_fallback),
+                ("preselection", clears.clear_preselection),
             ];
             for (key, clear) in cleared {
                 put(key, clear.then_some(Value::Null));

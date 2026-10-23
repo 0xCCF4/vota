@@ -13,8 +13,8 @@ use super::theme::{accent_color, known_logo, known_theme};
 use super::{InputError, Sanitized};
 use crate::domain::ballot::{
     Ballot, BallotChanges, BallotFilter, BallotStatus, ChoiceMode, Description, EditScope,
-    Extension, FallbackChoice, Group, NewBallot, OptionLabel, OptionLabels, SubmissionMode, Title,
-    VoterReference, VotingDeadline,
+    Extension, FallbackChoice, Group, NewBallot, OptionId, OptionLabel, OptionLabels,
+    PreselectionChoice, SubmissionMode, Title, VoterReference, VotingDeadline,
 };
 use crate::domain::bulk::{BallotCount, Bulk, ListRejection, MAX_BALLOTS, VoterReferenceList};
 use crate::domain::theme::{AccentColor, LogoName, ThemeCatalog, ThemeName};
@@ -44,6 +44,9 @@ pub struct CreateBallotRequest {
     /// Labels of the Fallback's Options; absent means no Fallback.
     #[serde(default, deserialize_with = "present")]
     fallback: Option<Vec<String>>,
+    /// Labels of the Preselection's Options; absent means no Preselection.
+    #[serde(default, deserialize_with = "present")]
+    preselection: Option<Vec<String>>,
     /// Absent means no Group.
     #[serde(default, deserialize_with = "present")]
     group: Option<String>,
@@ -189,6 +192,11 @@ pub fn new_ballot(
             raw.map(|raw| fallback(raw, &labels, choice_mode))
                 .transpose()
         })?,
+        preselection: request.preselection.sanitize_with(|raw| {
+            let labels: Vec<&str> = options.iter().map(OptionLabel::as_str).collect();
+            raw.map(|raw| preselection(raw, &labels, choice_mode))
+                .transpose()
+        })?,
         options,
         group,
         voter_reference,
@@ -320,6 +328,10 @@ pub struct EditBallotRequest {
     /// Labels of the Fallback's Options; `null` removes the Fallback.
     #[serde(default, deserialize_with = "nullable")]
     fallback: Option<Option<Vec<String>>>,
+    /// Labels of the Preselection's Options; `null` removes the
+    /// Preselection.
+    #[serde(default, deserialize_with = "nullable")]
+    preselection: Option<Option<Vec<String>>>,
     /// `null` removes the Group.
     #[serde(default, deserialize_with = "nullable")]
     group: Option<Option<String>>,
@@ -355,6 +367,7 @@ impl EditBallotRequest {
             || self.allow_no_option.is_some()
             || self.submission_mode.is_some()
             || self.fallback.is_some()
+            || self.preselection.is_some()
             || self.voting_deadline.is_some()
             || self.purge_date.is_some()
             || self.theme.is_some()
@@ -451,6 +464,16 @@ pub fn ballot_changes(
         Some(fallback) => fallback,
         None => kept_fallback(ballot, &labels, choice_mode)?,
     };
+    let preselection = match request.preselection.sanitize_with(|raw| {
+        raw.map(|raw| {
+            raw.map(|raw| preselection(raw, &labels, choice_mode))
+                .transpose()
+        })
+        .transpose()
+    })? {
+        Some(preselection) => preselection,
+        None => kept_preselection(ballot, &labels, choice_mode)?,
+    };
     let group = request
         .group
         .sanitize_with(|raw| raw.map(group).transpose())?
@@ -485,6 +508,7 @@ pub fn ballot_changes(
         allow_no_option,
         submission_mode,
         fallback,
+        preselection,
         group,
         voter_reference,
         voting_deadline,
@@ -582,19 +606,47 @@ fn kept_fallback(
     let Some(ids) = &ballot.fallback else {
         return Ok(None);
     };
-    let positions = ballot
+    let positions = kept_positions(ballot, ids, labels).ok_or_else(|| {
+        InputError::new(
+            "fallback",
+            "the Fallback's Options are no longer all Options of this Ballot; give the Fallback again",
+        )
+    })?;
+    let positions = option_set(positions, "fallback", choice_mode)?;
+    Ok(Some(FallbackChoice::new(positions, Sanitized::PROOF)))
+}
+
+/// The Ballot's current Preselection, if any, kept like the Fallback
+/// ([`kept_fallback`]): resolved by label against the edited Option labels
+/// and checked against the edited Choice Mode; rejected if one of its
+/// Options is gone.
+fn kept_preselection(
+    ballot: &Ballot,
+    labels: &[&str],
+    choice_mode: ChoiceMode,
+) -> Result<Option<PreselectionChoice>, InputError> {
+    let Some(ids) = &ballot.preselection else {
+        return Ok(None);
+    };
+    let positions = kept_positions(ballot, ids, labels).ok_or_else(|| {
+        InputError::new(
+            "preselection",
+            "the Preselection's Options are no longer all Options of this Ballot; give the Preselection again",
+        )
+    })?;
+    let positions = option_set(positions, "preselection", choice_mode)?;
+    Ok(Some(PreselectionChoice::new(positions, Sanitized::PROOF)))
+}
+
+/// The positions in `labels` (the edited Option labels) of the Ballot's
+/// Options with these IDs, by label; `None` if one of them is gone.
+fn kept_positions(ballot: &Ballot, ids: &[OptionId], labels: &[&str]) -> Option<Vec<usize>> {
+    ballot
         .options
         .iter()
         .filter(|option| ids.contains(&option.id))
         .map(|option| labels.iter().position(|label| *label == option.label))
-        .collect::<Option<Vec<_>>>()
-        .ok_or_else(|| {
-            InputError::new(
-                "fallback",
-                "the Fallback's Options are no longer all Options of this Ballot; give the Fallback again",
-            )
-        })?;
-    fallback_choice(positions, choice_mode).map(Some)
+        .collect()
 }
 
 /// `GET /admin/ballots` query as received. Every parameter may repeat (see
@@ -713,17 +765,40 @@ fn option_labels(raw: Vec<OptionRequest>) -> Result<OptionLabels, InputError> {
     Ok(OptionLabels::new(labels, Sanitized::PROOF))
 }
 
-/// A Fallback given by Option labels: each label, sanitized like an Option
-/// label, must match one of `options` (the Ballot's Option labels, in order)
-/// exactly, at most once; the set obeys `choice_mode` (so it is never empty).
+/// A Fallback given by Option labels ([`option_labels_set`]).
 fn fallback(
     raw: Vec<String>,
     options: &[&str],
     choice_mode: ChoiceMode,
 ) -> Result<FallbackChoice, InputError> {
+    let positions = option_labels_set(raw, "fallback", options, choice_mode)?;
+    Ok(FallbackChoice::new(positions, Sanitized::PROOF))
+}
+
+/// A Preselection given by Option labels ([`option_labels_set`]): never
+/// empty, like a Fallback, even if the Ballot allows no Option.
+fn preselection(
+    raw: Vec<String>,
+    options: &[&str],
+    choice_mode: ChoiceMode,
+) -> Result<PreselectionChoice, InputError> {
+    let positions = option_labels_set(raw, "preselection", options, choice_mode)?;
+    Ok(PreselectionChoice::new(positions, Sanitized::PROOF))
+}
+
+/// A set of Options given by Option labels in `field`: each label,
+/// sanitized like an Option label, must match one of `options` (the
+/// Ballot's Option labels, in order) exactly, at most once; the set obeys
+/// `choice_mode` (so it is never empty). Their positions, ascending.
+fn option_labels_set(
+    raw: Vec<String>,
+    field: &str,
+    options: &[&str],
+    choice_mode: ChoiceMode,
+) -> Result<Vec<usize>, InputError> {
     let mut positions = Vec::with_capacity(raw.len());
     for (index, label) in raw.into_iter().enumerate() {
-        let error = |reason| InputError::new(format!("fallback[{index}]"), reason);
+        let error = |reason| InputError::new(format!("{field}[{index}]"), reason);
         let label = single_line(label, OptionLabel::MAX_CHARS).map_err(error)?;
         let position = options
             .iter()
@@ -734,19 +809,21 @@ fn fallback(
         }
         positions.push(position);
     }
-    fallback_choice(positions, choice_mode)
+    option_set(positions, field, choice_mode)
 }
 
-/// Fallback positions as a [`FallbackChoice`], if they obey `choice_mode`.
-fn fallback_choice(
+/// Positions of a set of Options in `field`, sorted, if they obey
+/// `choice_mode`.
+fn option_set(
     mut positions: Vec<usize>,
+    field: &str,
     choice_mode: ChoiceMode,
-) -> Result<FallbackChoice, InputError> {
+) -> Result<Vec<usize>, InputError> {
     choice_mode
         .check_selection_count(positions.len())
-        .map_err(|reason| InputError::new("fallback", reason))?;
+        .map_err(|reason| InputError::new(field, reason))?;
     positions.sort_unstable();
-    Ok(FallbackChoice::new(positions, Sanitized::PROOF))
+    Ok(positions)
 }
 
 /// A Voting Deadline: in the future and within the horizon.

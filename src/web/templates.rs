@@ -31,10 +31,14 @@
 //!
 //! `ballot.html` (the voting page, in every state) also gets:
 //! - `options`: the Options, each with `id`, `label` and `checked` (in the
-//!   current Response);
+//!   current Response; without one, while voting is open, in the
+//!   Preselection);
 //! - `multiple` (multiple choice), `editable` (Editable Submission Mode),
 //!   `answered` (has a Response), `read_only` (the Response is shown without
 //!   a form), `closed` (the Voting Deadline has passed);
+//! - `preselected`: whether the ticked Options are the admin's Preselection,
+//!   not the voter's choice (a Final Ballot without a Response while open,
+//!   or an Editable one whose Response is still the Preselection);
 //! - `selected`: the Options of the current Response (`id`, `label`);
 //! - `upcoming_fallback`: while voting is open and there is no Response, the
 //!   Fallback's Options, or none; `fallback`: once voting has closed, the

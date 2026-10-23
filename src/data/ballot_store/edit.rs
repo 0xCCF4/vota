@@ -5,7 +5,9 @@ use chrono::{DateTime, Utc};
 use sqlx::{SqliteConnection, SqlitePool};
 
 use super::lookup::find_by_id_on;
-use super::{MAX_ATTEMPTS, free_purged_voter_reference, is_duplicate_voter_reference};
+use super::{
+    MAX_ATTEMPTS, free_purged_voter_reference, is_duplicate_voter_reference, write_preselection,
+};
 use crate::domain::ballot::{
     Ballot, BallotChanges, BallotId, Description, EditRefusal, EditScope, Extension, Group,
     OptionId, VoterReference,
@@ -35,10 +37,14 @@ pub(crate) enum Edited<E> {
 /// edit writes only the Group and Voter Reference and keeps the revision, as
 /// the voter sees nothing of it. Reading, validating and writing happen in one
 /// immediate (write-locked) transaction, and a content write is conditional
-/// on the Ballot still having no Response and no applied Fallback (stored
-/// Voting Deadline not after `now` with a Fallback), so a content edit and a
-/// voter's Response can never both win, nor can a content edit land once the
-/// Fallback has applied.
+/// on the Ballot still having no Response of the voter and no recorded
+/// result once voting has closed (stored Voting Deadline not after `now`
+/// with a Fallback or a Response from the Preselection), so a content edit
+/// and a voter's Response can never both win, nor can a content edit land
+/// once the Fallback or the Preselection is the result. A content edit
+/// replaces the Preselection, and the Response recorded from the old one
+/// (if any) with one from the new one, answered at `now`, if the resulting
+/// Ballot records it ([`write_preselection`]).
 pub(crate) async fn edit<E>(
     db: &SqlitePool,
     id: BallotId,
@@ -90,9 +96,11 @@ pub(crate) async fn edit<E>(
                             voting_deadline = ?7, purge_date = ?8,
                             description = ?9, theme = ?10, accent_color = ?11,
                             logo = ?12, allow_no_option = ?14, revision = revision + 1
-         WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM responses WHERE ballot_id = ?1)
+         WHERE id = ?1
+           AND NOT EXISTS (SELECT 1 FROM responses WHERE ballot_id = ?1 AND origin = 'voter')
            AND NOT (voting_deadline <= ?13
-                    AND EXISTS (SELECT 1 FROM fallback_options WHERE ballot_id = ?1))",
+                    AND (EXISTS (SELECT 1 FROM fallback_options WHERE ballot_id = ?1)
+                         OR EXISTS (SELECT 1 FROM responses WHERE ballot_id = ?1)))",
     )
     .bind(id.get())
     .bind(changes.title.as_str())
@@ -128,6 +136,16 @@ pub(crate) async fn edit<E>(
             )),
         };
     }
+    // Only a Response from the Preselection can be left (the write above
+    // made sure); the resulting Preselection is recorded anew below.
+    sqlx::query("DELETE FROM responses WHERE ballot_id = ?")
+        .bind(id.get())
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM preselected_options WHERE ballot_id = ?")
+        .bind(id.get())
+        .execute(&mut *tx)
+        .await?;
     let option_ids: Vec<OptionId> = match &changes.options {
         Some(labels) => {
             // Cascades to the Fallback's membership rows.
@@ -153,6 +171,19 @@ pub(crate) async fn edit<E>(
             .bind(option_ids[position].as_str())
             .execute(&mut *tx)
             .await?;
+    }
+    if let Some(preselection) = &changes.preselection {
+        let preselected: Vec<OptionId> = (preselection.positions().iter())
+            .map(|&position| option_ids[position].clone())
+            .collect();
+        write_preselection(
+            &mut tx,
+            id.get(),
+            &preselected,
+            changes.submission_mode,
+            now,
+        )
+        .await?;
     }
     let Some(edited) = find_by_id_on(&mut tx, id, now).await? else {
         return Ok(Edited::NotFound);

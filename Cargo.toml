@@ -105,6 +105,7 @@ client = [
     "dep:reqwest",
     "dep:serde",
     "dep:serde_json",
+    "dep:untrusted_value",
     "dep:url",
 ]
 # `vota ballot create --qr` and `vota ballot get --qr`: the Ballot URL as a

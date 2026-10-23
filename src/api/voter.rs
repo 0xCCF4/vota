@@ -149,6 +149,12 @@ fn voter_view(state: &AppState, ballot: &Ballot, now: DateTime<Utc>) -> Value {
         "fallback": ballot.fallback.as_ref().map(|option_ids| json!({
             "option_ids": option_ids,
         })),
+        // The Options the voting page ticks before the voter does (null
+        // without a Preselection). On an Editable Ballot it is also the
+        // Response (`origin: "preselection"`) until the voter saves one.
+        "preselection": ballot.preselection.as_ref().map(|option_ids| json!({
+            "option_ids": option_ids,
+        })),
         "result": ballot.result(now).map(|result| json!({
             "source": result.source.as_str(),
             "option_ids": result.option_ids,

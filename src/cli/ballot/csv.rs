@@ -6,23 +6,28 @@
 //!
 //! A thin wrapper around the `csv` crate, which does the quoting; the
 //! formula protection is ours, applied to each cell before it is written.
-//! The cells are written as given: escaping text that must not reach a
-//! terminal is the caller's job (see `printable_lines` in `cli/escape.rs`).
+//! The cells arrive escaped already, as [`PrintableLines`] (`cli/escape.rs`),
+//! so nothing in them can steer a terminal; line feeds and tabs are kept.
 
 use std::borrow::Cow;
 
 use csv::{QuoteStyle, Terminator, Writer, WriterBuilder};
 
-/// A whole CSV document: the `header` row, then each of `rows`.
-pub(super) fn document<R, C>(header: &[&str], rows: impl IntoIterator<Item = R>) -> String
+use super::PrintableLines;
+
+/// A whole CSV document: the `header` row (the client's own names), then
+/// each of `rows`.
+pub(super) fn document<R>(header: &[&str], rows: impl IntoIterator<Item = R>) -> String
 where
-    R: IntoIterator<Item = C>,
-    C: AsRef<str>,
+    R: IntoIterator<Item = PrintableLines>,
 {
     let mut writer = writer();
     write_record(&mut writer, header);
     for row in rows {
-        write_record(&mut writer, row);
+        write_record(
+            &mut writer,
+            row.into_iter().map(|cell| cell.as_str().to_owned()),
+        );
     }
     finish(writer)
 }
@@ -116,7 +121,9 @@ mod tests {
 
     #[test]
     fn a_document_is_a_header_and_records_ended_by_crlf() {
-        let text = document(&["id", "name"], [["1", "Pizza"], ["2", "Sushi"]]);
+        let rows = [["1", "Pizza"], ["2", "Sushi"]].map(|row| row.map(PrintableLines::new));
+
+        let text = document(&["id", "name"], rows);
 
         assert_eq!(text, "id,name\r\n1,Pizza\r\n2,Sushi\r\n");
     }

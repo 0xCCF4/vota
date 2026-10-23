@@ -23,7 +23,8 @@
 // multiple-choice debounce, automatic retries with backoff, Retry-After,
 // "Retry now" and the online event, definitive errors not retried, the 409
 // dialogs and reloads, the beforeunload prompt only while something is not
-// stored); the Final confirmation dialog and its error dialogs; an Option
+// stored); autosave and the Final confirmation starting from a
+// Preselection; the Final confirmation dialog and its error dialogs; an Option
 // the admin replaced or a title the admin changed while the page was open
 // (409 `ballot_changed`, then a reload; the script sends the page's
 // revision); the countdown closing the page, with and without a
@@ -520,6 +521,71 @@ try {
     check(view.status === "answered" && view.response?.option_ids.length === 0, "the empty Final Response is stored", view);
     await clickButton("OK");
     await waitFor("the read-only view", async () => (await evaluate(`document.body.innerText`)).includes("You chose no option."));
+  }
+
+  // --- Preselection, Editable: autosave starts from the preselected Response ----------
+  {
+    const ballot = await createBallot({ submission_mode: "editable", choice_mode: "multiple", preselection: ["Sushi", "Tacos"] });
+    await open(`/b/${ballot.token}`);
+    check((await checkedLabels()) === "Sushi,Tacos", "the preselected Options are ticked", await checkedLabels());
+    check(
+      (await evaluate(`document.body.innerText`)).includes("Preselected for you. You can change it until voting closes."),
+      "the page says the answer is preselected",
+    );
+    check((await autosaveStatus())?.[0] === "idle", "the preselected Response counts as stored", await autosaveStatus());
+    check(!(await wouldWarn()), "the preselected Response leaves without asking");
+    check(await visible('button[type="submit"]'), "while preselected, Save stays to keep it as the voter's");
+    const before = puts.length;
+    await click('button[type="submit"]');
+    await waitForAutosave("saved");
+    check(
+      puts.length - before === 1 &&
+        JSON.stringify(puts[before].selection) === JSON.stringify([ballot.options[1].id, ballot.options[2].id]),
+      "Save sends the preselected Options unchanged",
+      puts.slice(before),
+    );
+    check((await voterView(ballot.token)).response?.origin === "voter", "saving them makes the Response the voter's");
+    await waitFor("the page refreshed in place", async () => !(await evaluate(`document.body.innerText`)).includes("Preselected"));
+    check(await sameDocument(), "the notice goes without a reload");
+    check(!(await visible('button[type="submit"]')), "once the voter's, Save is hidden again");
+
+    // A change from the preselected state is saved like any other.
+    const fresh = await createBallot({ submission_mode: "editable", choice_mode: "multiple", preselection: ["Sushi"] });
+    await open(`/b/${fresh.token}`);
+    const sent = puts.length;
+    await choose("Pizza");
+    await waitForAutosave("saved");
+    check(
+      puts.length - sent === 1 &&
+        JSON.stringify(puts[sent].selection) === JSON.stringify([fresh.options[0].id, fresh.options[1].id]),
+      "a change sends the preselected Options with the new one",
+      puts.slice(sent),
+    );
+    const view = await voterView(fresh.token);
+    check(view.response?.origin === "voter" && (await storedLabels(fresh)) === "Pizza,Sushi", "the change is stored as the voter's", view);
+    await waitFor("the page refreshed in place", async () => !(await evaluate(`document.body.innerText`)).includes("Preselected"));
+    check(await sameDocument(), "the page updates in place after the change");
+  }
+
+  // --- Preselection, Final: ticked, then confirmed as ever ---------------------------
+  {
+    const ballot = await createBallot({ submission_mode: "final", preselection: ["Tacos"] });
+    await open(`/b/${ballot.token}`);
+    check((await checkedLabels()) === "Tacos", "the preselected Option is ticked", await checkedLabels());
+    check(
+      (await evaluate(`document.body.innerText`)).includes("Preselected; confirm or change, then submit."),
+      "the page asks to confirm or change the preselection",
+    );
+    check((await voterView(ballot.token)).status === "unanswered", "nothing is recorded before the voter submits");
+    await click('button[type="submit"]');
+    await waitForDialog("confirm");
+    check((await dialogText()).includes("Tacos"), "the dialog confirms the preselected Option", await dialogText());
+    await clickButton("Confirm and submit");
+    await waitForDialog("saved");
+    const view = await voterView(ballot.token);
+    check(view.status === "answered" && view.response?.origin === "voter", "confirming records the voter's Response", view);
+    await clickButton("OK");
+    await waitFor("the read-only view", () => evaluate(`!document.querySelector("form")`));
   }
 
   // --- Transient failures are retried ---------------------------------------------

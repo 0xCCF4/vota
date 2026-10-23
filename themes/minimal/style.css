@@ -104,7 +104,7 @@ a { color: var(--link); text-decoration-thickness: 1px; text-underline-offset: 0
 a:hover { text-decoration-thickness: 2px; }
 
 /* Small print: the meta line, hints, legends, buttons. */
-.meta, .fallback, legend, .outcome p, .submission-mode.final, .vota-autosave, .vota-option-state, button, .back {
+.meta, .fallback, .preselection-hint, legend, .outcome p, .submission-mode.final, .vota-autosave, .vota-option-state, button, .back {
   font-family: var(--sans);
 }
 
@@ -142,7 +142,7 @@ a:hover { text-decoration-thickness: 2px; }
   border-left: 2px solid var(--danger);
 }
 
-.fallback { margin: 0.25rem 0 0.75rem; color: var(--muted); font-size: 0.875rem; }
+.fallback, .preselection-hint { margin: 0.25rem 0 0.75rem; color: var(--muted); font-size: 0.875rem; }
 
 .fallback-badge {
   flex: none;

@@ -13,7 +13,9 @@ use super::themes::Look;
 use crate::AppState;
 use crate::data::ballot_store::{self, Recorded};
 use crate::domain::ballot::{Ballot, BallotOption, BallotStatus, ChoiceMode, SubmissionMode};
-use crate::domain::ballot::{BallotResult, OptionId, Refusal, ResultSource, Selection};
+use crate::domain::ballot::{
+    BallotResult, OptionId, Refusal, ResponseOrigin, ResultSource, Selection,
+};
 use crate::domain::theme::AccentColor;
 use crate::domain::token_generator::random_base64url;
 use crate::http::error_page;
@@ -264,8 +266,8 @@ fn render_with(
 }
 
 /// What `ballot.html` gets at `now`: the form (pre-filled with the current
-/// Response on an Editable Ballot; without a Response, with the Fallback
-/// that applies if none comes), a read-only view of the Response once the
+/// Response on an Editable Ballot, or else with the Preselection; without a
+/// Response, with the Fallback that applies if none comes), a read-only view of the Response once the
 /// Ballot accepts no more, or, once voting has closed, a read-only view of
 /// the outcome; with an optional notice for the voter.
 pub(super) fn voting_page_context(
@@ -281,7 +283,19 @@ pub(super) fn voting_page_context(
         Some(response) => &response.option_ids,
         None => &[],
     };
-    // The form, its inputs checked as in the current Response (if any).
+    // What the form ticks: the current Response; without one, while voting
+    // is open, the Preselection (on a Final Ballot, which doesn't record
+    // it: the voter still submits and confirms).
+    let (ticked, preselected): (&[OptionId], bool) = match (&ballot.response, &ballot.preselection)
+    {
+        (Some(response), _) => (
+            &response.option_ids,
+            response.origin == ResponseOrigin::Preselection,
+        ),
+        (None, Some(preselection)) if ballot.is_open(now) => (preselection, true),
+        (None, _) => (&[], false),
+    };
+    // The form, its inputs checked as ticked.
     let all: Vec<_> = ballot
         .options
         .iter()
@@ -289,7 +303,7 @@ pub(super) fn voting_page_context(
             context! {
                 id => o.id.as_str(),
                 label => &o.label,
-                checked => current.contains(&o.id),
+                checked => ticked.contains(&o.id),
             }
         })
         .collect();
@@ -305,6 +319,11 @@ pub(super) fn voting_page_context(
         allow_no_option => ballot.allow_no_option,
         editable => editable,
         answered => answered,
+        // Whether the ticked Options are the admin's Preselection, not the
+        // voter's choice: on a Final Ballot without a Response while voting
+        // is open, or on an Editable one whose Response was recorded from
+        // the Preselection and not saved by the voter since.
+        preselected => preselected,
         // Whether the Response is shown without a form.
         read_only => answered && ballot.accepts_response(now).is_err(),
         closed => !ballot.is_open(now),

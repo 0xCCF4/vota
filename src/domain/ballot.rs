@@ -317,6 +317,15 @@ impl SubmissionMode {
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|mode| mode.as_str() == name)
     }
+
+    /// Whether a Ballot of this mode records its Preselection as its
+    /// Response: an Editable one does, from the start, so it is Answered
+    /// and the voter can change it until the deadline; a Final one only
+    /// ticks it on the voting page, as the voter must still submit (and
+    /// confirm) a Response that can't be changed afterwards.
+    pub fn records_preselection(self) -> bool {
+        self == Self::Editable
+    }
 }
 
 /// The Fallback of a new or edited Ballot, as positions in its Options
@@ -325,6 +334,23 @@ impl SubmissionMode {
 pub struct FallbackChoice(Vec<usize>);
 
 impl FallbackChoice {
+    pub(crate) fn new(positions: Vec<usize>, _: Sanitized) -> Self {
+        Self(positions)
+    }
+
+    pub fn positions(&self) -> &[usize] {
+        &self.0
+    }
+}
+
+/// The Preselection of a new or edited Ballot, as positions in its Options
+/// (ascending, distinct): non-empty and obeying the Ballot's Choice Mode,
+/// like a Fallback (even with Allow No Option: a Preselection of no Option
+/// would preselect nothing).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreselectionChoice(Vec<usize>);
+
+impl PreselectionChoice {
     pub(crate) fn new(positions: Vec<usize>, _: Sanitized) -> Self {
         Self(positions)
     }
@@ -350,6 +376,7 @@ pub struct NewBallot {
     /// Never before the Voting Deadline.
     pub purge_date: Option<DateTime<Utc>>,
     pub fallback: Option<FallbackChoice>,
+    pub preselection: Option<PreselectionChoice>,
     pub group: Option<Group>,
     pub voter_reference: Option<VoterReference>,
     /// The default Theme unless the admin named one.
@@ -379,6 +406,9 @@ pub struct BallotDraft {
     pub voting_deadline: DateTime<Utc>,
     pub purge_date: DateTime<Utc>,
     pub fallback: Option<FallbackChoice>,
+    /// On an Editable Ballot, recorded as its Response from the start
+    /// ([`SubmissionMode::records_preselection`]).
+    pub preselection: Option<PreselectionChoice>,
     pub group: Option<Group>,
     pub voter_reference: Option<VoterReference>,
     pub theme: ThemeName,
@@ -408,6 +438,7 @@ impl BallotDraft {
             voting_deadline,
             purge_date,
             fallback: new.fallback,
+            preselection: new.preselection,
             group: new.group,
             voter_reference: new.voter_reference,
             theme: new.theme,
@@ -432,6 +463,10 @@ pub struct BallotChanges {
     pub submission_mode: SubmissionMode,
     /// As positions in the resulting Options.
     pub fallback: Option<FallbackChoice>,
+    /// As positions in the resulting Options. On an Editable Ballot it is
+    /// recorded (again) as the Response, replacing the one the old
+    /// Preselection left ([`Ballot::accepts_edit`]).
+    pub preselection: Option<PreselectionChoice>,
     pub group: Option<Group>,
     pub voter_reference: Option<VoterReference>,
     pub voting_deadline: DateTime<Utc>,
@@ -473,13 +508,19 @@ pub struct Ballot {
     pub voting_deadline: DateTime<Utc>,
     pub purge_date: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
-    /// The voter's Response, if they submitted one (possibly selecting no
-    /// Option, if the Ballot allows no Option).
+    /// The Response, if there is one: the voter's (possibly selecting no
+    /// Option, if the Ballot allows no Option), or on an Editable Ballot the
+    /// Preselection recorded as it ([`Response::origin`]).
     pub response: Option<Response>,
     /// IDs of the Fallback's Options in the Ballot's Option order, if the
     /// admin set a Fallback (never empty). Shown to the voter from the start,
     /// so they know what is recorded if they don't answer.
     pub fallback: Option<Vec<OptionId>>,
+    /// IDs of the Preselection's Options in the Ballot's Option order, if
+    /// the admin set one (never empty): ticked on the voting page. On an
+    /// Editable Ballot it is also recorded as the Response (of origin
+    /// [`ResponseOrigin::Preselection`]) until the voter saves one.
+    pub preselection: Option<Vec<OptionId>>,
     /// Admin business, never shown to the voter.
     pub group: Option<String>,
     /// Admin business, never shown to the voter.
@@ -523,20 +564,28 @@ impl Ballot {
     }
 
     /// Whether the admin may make an edit of this scope at `now`: content and
-    /// settings only while the Ballot has no Response, so a voter's Response
-    /// never silently changes meaning, and no applied Fallback (Auto-fallback),
-    /// so a recorded result doesn't change either (extending the deadline
-    /// reopens the Ballot first); the admin's bookkeeping (Group, Voter
-    /// Reference) at any time, as the voter never sees it. (The Ballot store's
-    /// conditional write enforces this atomically.)
+    /// settings only while the Ballot has no Response of the voter, so a
+    /// voter's Response never silently changes meaning, and no recorded
+    /// result, so that doesn't change either: no applied Fallback
+    /// (Auto-fallback), and no Preselection recorded as the Response once
+    /// voting has closed (extending the deadline reopens the Ballot first).
+    /// While voting is open, a Response recorded from the Preselection is
+    /// no obstacle: the voter hasn't acted, so the Ballot is edited as if
+    /// Unanswered, and the edit records the resulting Preselection anew.
+    /// The admin's bookkeeping (Group, Voter Reference) may change at any
+    /// time, as the voter never sees it. (The Ballot store's conditional
+    /// write enforces this atomically.)
     pub fn accepts_edit(&self, scope: EditScope, now: DateTime<Utc>) -> Result<(), EditRefusal> {
         if scope == EditScope::Bookkeeping {
             return Ok(());
         }
-        match self.status(now) {
-            BallotStatus::Answered => Err(EditRefusal::AlreadyAnswered),
-            BallotStatus::AutoFallback => Err(EditRefusal::FallbackApplied),
-            BallotStatus::Unanswered => Ok(()),
+        match self.result(now).map(|result| result.source) {
+            Some(ResultSource::Response) => Err(EditRefusal::AlreadyAnswered),
+            Some(ResultSource::Preselection) if !self.is_open(now) => {
+                Err(EditRefusal::AlreadyAnswered)
+            }
+            Some(ResultSource::Fallback) => Err(EditRefusal::FallbackApplied),
+            Some(ResultSource::Preselection) | None => Ok(()),
         }
     }
 
@@ -572,14 +621,18 @@ impl Ballot {
         self.choice_mode.check_selection_count(count)
     }
 
-    /// The Ballot's result at `now`: the voter's Response if there is one;
-    /// otherwise, once voting has closed, the Fallback if the admin set one;
-    /// otherwise none. Derived, never stored, so extending the deadline
-    /// reopens a Ballot naturally.
+    /// The Ballot's result at `now`: the Response if there is one (the
+    /// voter's, or the Preselection recorded as it, told apart by
+    /// `source`); otherwise, once voting has closed, the Fallback if the
+    /// admin set one; otherwise none. Derived, never stored, so extending
+    /// the deadline reopens a Ballot naturally.
     pub fn result(&self, now: DateTime<Utc>) -> Option<BallotResult<'_>> {
         match (&self.response, &self.fallback) {
             (Some(response), _) => Some(BallotResult {
-                source: ResultSource::Response,
+                source: match response.origin {
+                    ResponseOrigin::Voter => ResultSource::Response,
+                    ResponseOrigin::Preselection => ResultSource::Preselection,
+                },
                 option_ids: &response.option_ids,
             }),
             (None, Some(fallback)) if !self.is_open(now) => Some(BallotResult {
@@ -590,12 +643,13 @@ impl Ballot {
         }
     }
 
-    /// The Ballot Status at `now`: Answered with a Response, Auto-fallback
-    /// once the Fallback applies, Unanswered otherwise. Derived, never stored.
+    /// The Ballot Status at `now`: Answered with a Response (also one
+    /// recorded from the Preselection), Auto-fallback once the Fallback
+    /// applies, Unanswered otherwise. Derived, never stored.
     pub fn status(&self, now: DateTime<Utc>) -> BallotStatus {
         match self.result(now) {
             Some(BallotResult {
-                source: ResultSource::Response,
+                source: ResultSource::Response | ResultSource::Preselection,
                 ..
             }) => BallotStatus::Answered,
             Some(BallotResult {
@@ -649,7 +703,8 @@ pub enum BallotStatus {
     /// No Response yet, or voting closed without a Response and without a
     /// Fallback.
     Unanswered,
-    /// The voter submitted a Response.
+    /// There is a Response: the voter's, or on an Editable Ballot the
+    /// Preselection recorded as it.
     Answered,
     /// Voting closed without a Response; the Fallback is the result.
     AutoFallback,
@@ -686,6 +741,9 @@ pub struct BallotResult<'a> {
 pub enum ResultSource {
     /// The voter's Response.
     Response,
+    /// The admin's Preselection, recorded as the Response of an Editable
+    /// Ballot that the voter hasn't changed or saved.
+    Preselection,
     /// The admin's Fallback, applied because voting closed without a Response.
     Fallback,
 }
@@ -695,12 +753,43 @@ impl ResultSource {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Response => "response",
+            Self::Preselection => "preselection",
             Self::Fallback => "fallback",
         }
     }
 }
 
-/// The Options a voter submitted on a Ballot, with when.
+/// Where a Response comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResponseOrigin {
+    /// The voter saved it (on the voting page or through the voter API),
+    /// even if it selects the very Options of the Preselection.
+    #[default]
+    Voter,
+    /// The admin's Preselection, recorded as the Response of an Editable
+    /// Ballot when it was created or edited; the voter hasn't saved one.
+    Preselection,
+}
+
+impl ResponseOrigin {
+    pub const ALL: [Self; 2] = [Self::Voter, Self::Preselection];
+
+    /// The wire and storage name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Voter => "voter",
+            Self::Preselection => "preselection",
+        }
+    }
+
+    /// The origin with this wire or storage name (exact match).
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|origin| origin.as_str() == name)
+    }
+}
+
+/// The Options a voter submitted on a Ballot (or, on an Editable Ballot,
+/// the Preselection recorded in their place), with when and from whom.
 #[derive(Debug, Clone)]
 pub struct Response {
     /// IDs of the selected Options, in the Ballot's Option order. Empty only
@@ -709,6 +798,8 @@ pub struct Response {
     pub option_ids: Vec<OptionId>,
     pub answered_at: DateTime<Utc>,
     pub changed_at: DateTime<Utc>,
+    /// The voter's, or the Preselection's (until the voter saves one).
+    pub origin: ResponseOrigin,
 }
 
 /// A valid selection of a Ballot's Options for a Response: only the Ballot's

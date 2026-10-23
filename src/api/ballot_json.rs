@@ -27,11 +27,14 @@ fn option(option: &BallotOption) -> Value {
     json!({ "id": option.id, "label": option.label })
 }
 
-/// The voter's Response: `{option_ids, answered_at, changed_at}`.
+/// The Response: `{option_ids, answered_at, changed_at, origin}`, `origin`
+/// `voter` or (on an Editable Ballot the voter hasn't saved yet)
+/// `preselection`.
 pub(super) fn response(response: &Response) -> Value {
     json!({
         "option_ids": response.option_ids,
         "answered_at": rfc3339(response.answered_at),
         "changed_at": rfc3339(response.changed_at),
+        "origin": response.origin.as_str(),
     })
 }

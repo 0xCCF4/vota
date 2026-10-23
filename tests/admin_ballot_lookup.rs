@@ -68,6 +68,7 @@ async fn admin_sees_the_response_with_when_it_was_given_and_last_changed() {
             "option_ids": [sushi],
             "answered_at": "2030-01-16T08:00:00Z",
             "changed_at": "2030-01-17T09:30:00Z",
+            "origin": "voter",
         }),
         "{fetched}"
     );

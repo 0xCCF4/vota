@@ -12,6 +12,7 @@ It is one Rust binary with one SQLite database, meant to run behind a reverse pr
 - **Personal Ballots**: one voter per URL. The URL carries a 128-bit **Ballot Token**, the voter's only credential. Create one at a time, or up to 1000 in one all-or-nothing request: one per Voter Reference from a list, or numbered within a Group.
 - **Single or multiple choice** (multiple choice may allow answering with no Option at all), **Final** (locked after submitting, with a confirmation step) or **Editable** (changeable until the deadline) Responses.
 - **Voting Deadline** with an optional **Fallback** that becomes the result if the voter doesn't answer. Deadlines can be extended, which reopens closed Ballots.
+- **Preselection**: Options the admin ticks for the voter. On a Final Ballot the voter still confirms them; on an Editable Ballot they are saved as the answer from the start, which the voter can change until the deadline. The results tell a preselected answer from the voter's own.
 - **Purge Date**: every Ballot is deleted automatically (by default four weeks after its deadline), or earlier on request.
 - **Admin bookkeeping**: a **Group** to fetch a survey's results together (and tally or export them as CSV with the client) and a hidden **Voter Reference** (unique within the Group) to know whose Ballot is whose. Neither is ever shown to the voter.
 - **Results API**: list Ballots with their raw results, filtered by Group and Ballot Status (`unanswered`, `answered`, `auto_fallback`).

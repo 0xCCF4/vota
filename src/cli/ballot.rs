@@ -3,7 +3,12 @@
 //! the answers ([`render`]). The server is the only place input is checked:
 //! the client parses only what it needs to build the JSON (enum values, flag
 //! combinations, and relative dates, which [`dates`] turns into timestamps).
+//!
+//! The server's answers are untrusted input: [`answer`] is the only place
+//! they are unboxed, into typed views whose text can only be printed
+//! escaped (`cli/escape.rs`).
 
+mod answer;
 mod body;
 mod connection;
 mod csv;
@@ -24,7 +29,8 @@ use clap::{Subcommand, ValueEnum};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use reqwest::Method;
 
-use super::escape::{escape_json, printable, printable_lines};
+use super::escape::{PrintableJson, PrintableLines, PrintableText};
+use answer::{Body, Created, Reply};
 use body::{Clears, Fields};
 use connection::{Connection, ConnectionArgs};
 use dates::{Dates, Verb};
@@ -121,7 +127,7 @@ enum BallotCommand {
         #[arg(long)]
         group: Option<String>,
         /// Print the table as CSV (RFC 4180, CRLF):
-        /// option,answered,fallback,total.
+        /// option,answered,preselected,fallback,total.
         #[arg(long, conflicts_with = "json")]
         csv: bool,
     },
@@ -187,15 +193,35 @@ enum Status {
 /// error answer the body to print on stdout with `--json`.
 pub(super) struct Failure {
     exit: Exit,
-    message: String,
-    body: Option<String>,
+    /// Escaped as a whole: it may quote flag values or, through a
+    /// transport error, the server.
+    message: PrintableText,
+    body: Option<ErrorBody>,
+}
+
+/// The body of an error answer, for `--json`.
+enum ErrorBody {
+    Json(PrintableJson),
+    /// Not JSON: its text.
+    Text(PrintableText),
+}
+
+impl std::fmt::Display for ErrorBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Json(json) => json.fmt(f),
+            Self::Text(text) => text.fmt(f),
+        }
+    }
 }
 
 impl Failure {
+    /// The message is escaped (escaping already escaped text again changes
+    /// nothing).
     fn new(exit: Exit, message: impl Into<String>) -> Self {
         Self {
             exit,
-            message: message.into(),
+            message: PrintableText::new(&message.into()),
             body: None,
         }
     }
@@ -226,12 +252,11 @@ impl BallotArgs {
     async fn execute(self) -> Result<(), Failure> {
         let json = self.json;
         let connection = self.connection.connect()?;
-        let show = |reply: connection::Reply, human: fn(&serde_json::Value) -> String| {
-            let value = reply.unwrap_or_default();
+        let show = |body: Body, human: fn(&Body) -> String| {
             if json {
-                println!("{}", json_text(&value));
+                println!("{}", body.json());
             } else {
-                print!("{}", human(&value));
+                print!("{}", human(&body));
             }
         };
         match self.command {
@@ -260,31 +285,30 @@ impl BallotArgs {
                 // Whether from the flags or from --body.
                 #[cfg(feature = "qr")]
                 refuse_bulk_qr(qr, body::is_bulk_body(&body))?;
-                let answer = connection
-                    .send(Method::POST, "admin/ballots", Some(body))
-                    .await
-                    .map_err(with_taken_references)?
+                let answer = ask(&connection, Method::POST, "admin/ballots", Some(body))
+                    .await?
                     .unwrap_or_default();
-                let many = answer.get("ballots").is_some();
                 if json {
-                    println!("{}", json_text(&answer));
-                } else if csv {
-                    print!("{}", render::created_csv(&answer));
-                } else if many {
-                    print!("{}", render::created_table(&answer));
-                } else {
-                    println!("{}", render::text(&answer, "url"));
+                    println!("{}", answer.json());
                 }
+                let created = answer.created();
                 if !json {
-                    if many {
-                        eprint!("{}", render::created_many(&answer));
+                    if csv {
+                        print!("{}", render::created_csv(&created));
                     } else {
-                        eprint!("{}", render::created(&answer));
+                        match &created {
+                            Created::Many(ballots) => print!("{}", render::created_table(ballots)),
+                            Created::One(ballot) => println!("{}", ballot.url.show()),
+                        }
+                    }
+                    match &created {
+                        Created::Many(ballots) => eprint!("{}", render::created_many(ballots)),
+                        Created::One(ballot) => eprint!("{}", render::created(ballot)),
                     }
                 }
                 #[cfg(feature = "qr")]
-                if qr && !many {
-                    eprint!("{}", draw_qr(&answer)?);
+                if qr && let Created::One(ballot) = &created {
+                    eprint!("{}", draw_qr(ballot)?);
                 }
             }
             BallotCommand::Get {
@@ -292,15 +316,22 @@ impl BallotArgs {
                 #[cfg(feature = "qr")]
                 qr,
             } => {
-                let reply = connection
-                    .send(Method::GET, &format!("admin/ballots/{id}"), None)
-                    .await?;
+                let reply = ask(
+                    &connection,
+                    Method::GET,
+                    &format!("admin/ballots/{id}"),
+                    None,
+                )
+                .await?;
+                // Drawn first, so a Ballot without a URL prints nothing.
                 #[cfg(feature = "qr")]
                 let code = match (&reply, qr) {
-                    (Some(ballot), true) => Some(draw_qr(ballot)?),
+                    (Some(body), true) => Some(draw_qr(&body.ballot())?),
                     _ => None,
                 };
-                show(reply, render::ballot);
+                show(reply.unwrap_or_default(), |body| {
+                    render::ballot(&body.ballot())
+                });
                 #[cfg(feature = "qr")]
                 if let Some(code) = code {
                     eprint!("{code}");
@@ -308,18 +339,24 @@ impl BallotArgs {
             }
             BallotCommand::List { group, status, csv } => {
                 let path = list_path(group.as_deref(), status);
-                let reply = connection.send(Method::GET, &path, None).await?;
-                show(reply, if csv { render::list_csv } else { render::table });
+                let body = ask(&connection, Method::GET, &path, None)
+                    .await?
+                    .unwrap_or_default();
+                if csv {
+                    show(body, |body| render::list_csv(&body.list()));
+                } else {
+                    show(body, |body| render::table(&body.list()));
+                }
             }
             BallotCommand::Tally { group, csv } => {
                 let path = list_path(group.as_deref(), None);
-                let list = connection
-                    .send(Method::GET, &path, None)
+                let list = ask(&connection, Method::GET, &path, None)
                     .await?
-                    .unwrap_or_default();
+                    .unwrap_or_default()
+                    .list();
                 let tally = tally::Tally::of(&list, group)?;
                 if json {
-                    println!("{}", json_text(&tally.json()));
+                    println!("{}", PrintableJson::pretty(&tally.json()));
                 } else if csv {
                     print!("{}", tally.csv());
                 } else {
@@ -340,10 +377,16 @@ impl BallotArgs {
                         fields.into_body(Some(clears), None)?
                     }
                 };
-                let reply = connection
-                    .send(Method::PATCH, &format!("admin/ballots/{id}"), Some(body))
-                    .await?;
-                show(reply, render::ballot);
+                let reply = ask(
+                    &connection,
+                    Method::PATCH,
+                    &format!("admin/ballots/{id}"),
+                    Some(body),
+                )
+                .await?;
+                show(reply.unwrap_or_default(), |body| {
+                    render::ballot(&body.ballot())
+                });
             }
             BallotCommand::Extend {
                 id,
@@ -358,22 +401,28 @@ impl BallotArgs {
                 )
                 .await?;
                 let body = serde_json::json!({ "voting_deadline": voting_deadline });
-                let reply = connection
-                    .send(
-                        Method::POST,
-                        &format!("admin/ballots/{id}/extend"),
-                        Some(body.to_string().into_bytes()),
-                    )
-                    .await?;
-                show(reply, render::ballot);
+                let reply = ask(
+                    &connection,
+                    Method::POST,
+                    &format!("admin/ballots/{id}/extend"),
+                    Some(body.to_string().into_bytes()),
+                )
+                .await?;
+                show(reply.unwrap_or_default(), |body| {
+                    render::ballot(&body.ballot())
+                });
             }
             BallotCommand::Delete { id, yes } => {
                 if !yes {
                     confirm_delete(&connection, id).await?;
                 }
-                connection
-                    .send(Method::DELETE, &format!("admin/ballots/{id}"), None)
-                    .await?;
+                ask(
+                    &connection,
+                    Method::DELETE,
+                    &format!("admin/ballots/{id}"),
+                    None,
+                )
+                .await?;
                 if !json {
                     eprintln!("Deleted Ballot {id}.");
                 }
@@ -381,6 +430,16 @@ impl BallotArgs {
         }
         Ok(())
     }
+}
+
+/// Sends one request and reads the answer ([`answer::read`]).
+async fn ask(
+    connection: &Connection,
+    method: Method,
+    path: &str,
+    body: Option<Vec<u8>>,
+) -> Result<Reply, Failure> {
+    answer::read(connection.send(method, path, body).await?)
 }
 
 /// `--qr` with many Ballots: a usage error, before anything is sent.
@@ -394,32 +453,17 @@ fn refuse_bulk_qr(qr: bool, is_bulk: bool) -> Result<(), Failure> {
     Ok(())
 }
 
-/// The QR code of the Ballot's `url`, with the URL below it.
+/// The QR code of the Ballot's URL, with the URL below it. A Ballot
+/// without an `http(s)` URL is an unexpected answer.
 #[cfg(feature = "qr")]
-fn draw_qr(ballot: &serde_json::Value) -> Result<String, Failure> {
-    let url = ballot["url"]
-        .as_str()
-        .ok_or_else(|| Failure::new(Exit::Other, "unexpected response: a Ballot without a url"))?;
+fn draw_qr(ballot: &answer::ServerBallot) -> Result<String, Failure> {
+    let url = ballot.url.known().ok_or_else(|| {
+        Failure::new(
+            Exit::Other,
+            "unexpected response: a Ballot without an http(s) url",
+        )
+    })?;
     qr::code(url)
-}
-
-/// A refused bulk create names the Voter References that are taken
-/// (`voter_references` of the 409 answer) in the message too.
-fn with_taken_references(mut failure: Failure) -> Failure {
-    let answer: Option<serde_json::Value> =
-        (failure.body.as_deref()).and_then(|body| serde_json::from_str(body).ok());
-    let taken: Vec<String> = (answer.iter())
-        .filter_map(|answer| answer["voter_references"].as_array())
-        .flatten()
-        .map(|reference| match reference.as_str() {
-            Some(reference) => printable(reference),
-            None => printable(&reference.to_string()),
-        })
-        .collect();
-    if !taken.is_empty() {
-        failure.message += &format!(" (taken: {})", taken.join(", "));
-    }
-    failure
 }
 
 /// Replaces relative values of the date flags (`3d`, `+7d`) with the UTC
@@ -452,13 +496,17 @@ async fn current_deadline(
     connection: &Connection,
     id: u64,
 ) -> Result<chrono::DateTime<chrono::Utc>, Failure> {
-    let ballot = connection
-        .send(Method::GET, &format!("admin/ballots/{id}"), None)
-        .await?
-        .unwrap_or_default();
-    ballot["voting_deadline"]
-        .as_str()
-        .and_then(|deadline| deadline.parse().ok())
+    let ballot = ask(
+        connection,
+        Method::GET,
+        &format!("admin/ballots/{id}"),
+        None,
+    )
+    .await?
+    .unwrap_or_default()
+    .ballot();
+    (ballot.voting_deadline.known())
+        .map(answer::Timestamp::instant)
         .ok_or_else(|| {
             Failure::new(
                 Exit::Other,
@@ -476,15 +524,17 @@ async fn confirm_delete(connection: &Connection, id: u64) -> Result<(), Failure>
              pass --yes to delete without asking"
         )));
     }
-    let ballot = connection
-        .send(Method::GET, &format!("admin/ballots/{id}"), None)
-        .await?
-        .unwrap_or_default();
+    let ballot = ask(
+        connection,
+        Method::GET,
+        &format!("admin/ballots/{id}"),
+        None,
+    )
+    .await?
+    .unwrap_or_default()
+    .ballot();
     eprint!("{}", render::summary(&ballot));
-    eprint!(
-        "Delete Ballot {id} \"{}\"? [y/N] ",
-        render::text(&ballot, "title")
-    );
+    eprint!("Delete Ballot {id} \"{}\"? [y/N] ", ballot.title.show());
     let mut answer = String::new();
     std::io::stdin()
         .read_line(&mut answer)
@@ -528,12 +578,6 @@ fn enum_name(value: impl ValueEnum) -> String {
         .to_owned()
 }
 
-/// `value` pretty-printed, with every character that could steer the
-/// terminal escaped.
-fn json_text(value: &serde_json::Value) -> String {
-    escape_json(&serde_json::to_string_pretty(value).expect("JSON values serialize"))
-}
-
 /// The bytes of `path`, or of stdin for `-`; an unreadable file is a usage
 /// error naming `flag`.
 fn read_bytes(path: &Path, flag: &str) -> Result<Vec<u8>, Failure> {
@@ -546,7 +590,7 @@ fn read_bytes(path: &Path, flag: &str) -> Result<Vec<u8>, Failure> {
     result.map_err(|error| {
         Failure::usage(format!(
             "can't read {flag} {}: {error}",
-            printable(&path.to_string_lossy())
+            path.to_string_lossy()
         ))
     })
 }

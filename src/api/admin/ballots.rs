@@ -87,10 +87,13 @@ pub(super) async fn get_one(
 }
 
 /// `PATCH /admin/ballots/{id}`: edits the Ballot while it has no Response
-/// and no applied Fallback; 200 with the admin view, 409 `already_answered`
-/// once it has a Response, 409 `fallback_applied` once its Fallback has
-/// applied (Auto-fallback), unless the edit names only `group` and/or
-/// `voter_reference` (the admin's bookkeeping), which may change at any time.
+/// of the voter and no applied Fallback; 200 with the admin view, 409
+/// `already_answered` once it has a Response of the voter (or, once voting
+/// has closed, one from the Preselection), 409 `fallback_applied` once its
+/// Fallback has applied (Auto-fallback), unless the edit names only `group`
+/// and/or `voter_reference` (the admin's bookkeeping), which may change at
+/// any time. While voting is open, a Response from the Preselection is
+/// replaced by one from the resulting Preselection.
 pub(super) async fn edit(
     State(state): State<AppState>,
     BallotIdPath { id, .. }: BallotIdPath<Admin>,
@@ -174,7 +177,8 @@ pub(super) async fn list(
 }
 
 /// The admin's view of a Ballot at `now`, with its derived Ballot Status and
-/// result (the Response, or the applied Fallback, marked by `source`).
+/// result (the voter's Response, the Preselection recorded as the Response,
+/// or the applied Fallback, marked by `source`).
 fn admin_view(state: &AppState, ballot: &Ballot, now: DateTime<Utc>) -> Value {
     json!({
         "id": ballot.id,
@@ -195,6 +199,7 @@ fn admin_view(state: &AppState, ballot: &Ballot, now: DateTime<Utc>) -> Value {
         "accent_color": ballot.accent_color.as_ref().map(AccentColor::as_str),
         "logo": ballot.logo,
         "fallback": ballot.fallback.as_ref().map(|ids| ballot_json::options_with_ids(ballot, ids)),
+        "preselection": ballot.preselection.as_ref().map(|ids| ballot_json::options_with_ids(ballot, ids)),
         "status": ballot.status(now).as_str(),
         "result": ballot.result(now).map(|result| json!({
             "source": result.source.as_str(),

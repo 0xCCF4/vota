@@ -29,6 +29,7 @@ async fn voter_api_returns_the_ballot_by_its_token() {
             "voting_open": true,
             "status": "unanswered",
             "fallback": null,
+            "preselection": null,
             "response": null,
             "result": null,
             "theme": "classic",

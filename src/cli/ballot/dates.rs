@@ -21,7 +21,7 @@
 
 use chrono::{DateTime, Months, SecondsFormat, SubsecRound as _, TimeDelta, Utc};
 
-use super::{Failure, printable};
+use super::Failure;
 
 /// The command whose date flags are read, with the Ballot's ID.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -228,14 +228,10 @@ impl Flag {
             let delta = Span::parse(text).map_err(|error| {
                 let why = match error {
                     SpanError::Malformed => "not a timestamp or a duration".to_owned(),
-                    SpanError::Unit(unit) => format!("unknown unit \"{}\"", printable(&unit)),
+                    SpanError::Unit(unit) => format!("unknown unit \"{unit}\""),
                     SpanError::TooLong => "the duration is too long for a date".to_owned(),
                 };
-                Failure::usage(format!(
-                    "{name} {}: {why}; {}",
-                    printable(value),
-                    accepted()
-                ))
+                Failure::usage(format!("{name} {value}: {why}; {}", accepted()))
             })?;
             if relative {
                 When::After(delta)
@@ -250,9 +246,10 @@ impl Flag {
         })
     }
 
-    /// `--flag value: why`, a usage error.
+    /// `--flag value: why`, a usage error (escaped, like every
+    /// [`Failure`]).
     fn refused(&self, why: &str) -> Failure {
-        Failure::usage(format!("{} {}: {why}", self.name, printable(&self.value)))
+        Failure::usage(format!("{} {}: {why}", self.name, self.value))
     }
 
     /// The instant this flag names: `Ok(None)` for a timestamp that isn't
@@ -292,9 +289,11 @@ impl Flag {
         } else {
             ("Purge Date", "after the Voting Deadline")
         };
+        // Only a duration gets here, which `Span::parse` read: ASCII
+        // digits and unit letters, nothing to escape.
         let relation = match self.when {
-            When::After(_) => format!("{} {how}", printable(&self.value[1..])),
-            _ => format!("in {}", printable(&self.value)),
+            When::After(_) => format!("{} {how}", &self.value[1..]),
+            _ => format!("in {}", self.value),
         };
         notes.push(format!("{field}: {sent} ({relation})"));
         sent
@@ -405,8 +404,7 @@ impl Dates {
                      RFC 3339 with an offset (a local time is read by the server); give \
                      the Voting Deadline with an offset or as a duration, or the Purge \
                      Date as a timestamp",
-                    given.name,
-                    printable(&given.value)
+                    given.name, given.value
                 )));
             }
             let instant = flag.instant(now, deadline)?;
@@ -539,7 +537,7 @@ mod tests {
             panic!("accepted");
         };
         assert_eq!(failure.exit, Exit::Usage, "{}", failure.message);
-        failure.message
+        failure.message.to_string()
     }
 
     #[test]

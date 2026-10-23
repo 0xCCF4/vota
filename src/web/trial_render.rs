@@ -22,7 +22,8 @@ use super::ballot_page;
 use super::revision_field;
 use super::themes::Look;
 use crate::domain::ballot::{
-    Ballot, BallotOption, BallotToken, ChoiceMode, OptionId, Response, SubmissionMode,
+    Ballot, BallotOption, BallotToken, ChoiceMode, OptionId, Response, ResponseOrigin,
+    SubmissionMode,
 };
 use crate::domain::theme::AccentColor;
 
@@ -173,6 +174,7 @@ fn voting_page_samples(decorated: bool) -> Vec<(&'static str, Ballot, DateTime<U
             option_ids: vec![ballot.options[0].id.clone()],
             answered_at: open,
             changed_at: open,
+            origin: ResponseOrigin::Voter,
         });
         ballot
     };
@@ -186,6 +188,7 @@ fn voting_page_samples(decorated: bool) -> Vec<(&'static str, Ballot, DateTime<U
             option_ids: Vec::new(),
             answered_at: open,
             changed_at: open,
+            origin: ResponseOrigin::Voter,
         });
         ballot
     };
@@ -234,6 +237,30 @@ fn voting_page_samples(decorated: bool) -> Vec<(&'static str, Ballot, DateTime<U
         (
             "closed with a Response",
             answered(SubmissionMode::Final),
+            closed,
+        ),
+        (
+            "open, Final, with a Preselection",
+            with_preselection(
+                unanswered(ChoiceMode::Multiple, SubmissionMode::Final),
+                open,
+            ),
+            open,
+        ),
+        (
+            "open, Editable, answered by its Preselection",
+            with_preselection(
+                unanswered(ChoiceMode::Single, SubmissionMode::Editable),
+                open,
+            ),
+            open,
+        ),
+        (
+            "closed, answered by its Preselection",
+            with_preselection(
+                unanswered(ChoiceMode::Multiple, SubmissionMode::Editable),
+                open,
+            ),
             closed,
         ),
         (
@@ -286,6 +313,7 @@ fn sample_ballot(
         created_at: sample_deadline() - Duration::days(7),
         response: None,
         fallback: None,
+        preselection: None,
         group: None,
         voter_reference: None,
         theme: String::new(),
@@ -316,6 +344,26 @@ fn with_fallback(ballot: Ballot) -> Ballot {
     };
     Ballot {
         fallback: Some(ids),
+        ..ballot
+    }
+}
+
+/// `ballot` with a Preselection of its first Option, recorded as its
+/// Response (answered at `at`) if its Submission Mode records it.
+fn with_preselection(ballot: Ballot, at: DateTime<Utc>) -> Ballot {
+    let ids = vec![ballot.options[0].id.clone()];
+    let response = ballot
+        .submission_mode
+        .records_preselection()
+        .then(|| Response {
+            option_ids: ids.clone(),
+            answered_at: at,
+            changed_at: at,
+            origin: ResponseOrigin::Preselection,
+        });
+    Ballot {
+        preselection: Some(ids),
+        response,
         ..ballot
     }
 }

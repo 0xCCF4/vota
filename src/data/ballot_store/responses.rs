@@ -27,7 +27,10 @@ pub(crate) enum Recorded {
 ///   conditional insert (at most one per Ballot), so concurrent or repeated
 ///   submissions can never store two Responses.
 /// - Editable: replaces any earlier Response. `answered_at` stays the time of
-///   the first Response, `changed_at` becomes `now`.
+///   the voter's first Response, `changed_at` becomes `now`. A Response
+///   recorded from the Preselection is replaced like any other, even by the
+///   same Options: the Response becomes the voter's (origin `voter`), and
+///   `answered_at` the time of this, their first one.
 ///
 /// The deadline and the revision the voter saw are part of the same
 /// conditional write, so a submission racing a change of the deadline can't
@@ -51,13 +54,20 @@ pub(crate) async fn record_response(
              WHERE id = ?1 AND voting_deadline > ?2 AND purge_date > ?2 AND revision = ?3
              ON CONFLICT (ballot_id) DO NOTHING"
         }
-        // `max` keeps changed_at from running backwards if the system clock does.
+        // `max` keeps changed_at from running backwards if the system clock
+        // does. (The right-hand sides read the row as it was.)
         SubmissionMode::Editable => {
             "INSERT INTO responses (ballot_id, answered_at, changed_at)
              SELECT id, ?2, ?2 FROM ballots
              WHERE id = ?1 AND voting_deadline > ?2 AND purge_date > ?2 AND revision = ?3
              ON CONFLICT (ballot_id)
-             DO UPDATE SET changed_at = max(changed_at, excluded.changed_at)"
+             DO UPDATE SET
+                 answered_at = CASE WHEN origin = 'voter' THEN answered_at
+                                    ELSE excluded.answered_at END,
+                 changed_at = CASE WHEN origin = 'voter'
+                                   THEN max(changed_at, excluded.changed_at)
+                                   ELSE excluded.changed_at END,
+                 origin = 'voter'"
         }
     };
     let written = sqlx::query(insert)

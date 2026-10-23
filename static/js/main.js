@@ -61,7 +61,9 @@ function start(initialConfig) {
     startCountdown(config, votingClosed);
     const form = votingForm();
     if (form && config.open && config.editable && dialog.canDialog) {
-      needsRefresh = needsRefresh || !config.answered;
+      // Also while the Response is the Preselection: once the voter saves,
+      // the page's notice says it is theirs.
+      needsRefresh = needsRefresh || !config.answered || config.preselected;
       autosave = createAutosave(form, {
         config: () => config,
         onSaved: autosaved,
@@ -145,7 +147,8 @@ function start(initialConfig) {
   // --- Saving ---------------------------------------------------------------
 
   /** Everything is autosaved: the first time, refresh the page in place, so
-   * its status and notices show the Ballot as Answered. */
+   * its status and notices show the Ballot as Answered (by the voter, not
+   * by the Preselection). */
   function autosaved() {
     if (!needsRefresh || !autosave) {
       return;

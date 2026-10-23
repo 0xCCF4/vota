@@ -8,7 +8,7 @@ use sqlx::{SqliteConnection, SqlitePool};
 use crate::data::millis;
 use crate::domain::ballot::{
     Ballot, BallotFilter, BallotId, BallotOption, BallotToken, ChoiceMode, Group, OptionId,
-    Response, SubmissionMode,
+    Response, ResponseOrigin, SubmissionMode,
 };
 use crate::domain::theme::AccentColor;
 
@@ -128,17 +128,22 @@ async fn load(conn: &mut SqliteConnection, row: BallotRow) -> sqlx::Result<Ballo
     })
     .collect();
     let response = find_response(conn, id).await?;
-    let fallback: Vec<OptionId> = sqlx::query_scalar::<_, String>(
+    let fallback = option_set(
+        conn,
         "SELECT f.option_id FROM fallback_options f
          JOIN ballot_options o ON o.ballot_id = f.ballot_id AND o.id = f.option_id
          WHERE f.ballot_id = ? ORDER BY o.position",
+        id,
     )
-    .bind(id)
-    .fetch_all(&mut *conn)
-    .await?
-    .into_iter()
-    .map(OptionId::from_store)
-    .collect();
+    .await?;
+    let preselection = option_set(
+        conn,
+        "SELECT p.option_id FROM preselected_options p
+         JOIN ballot_options o ON o.ballot_id = p.ballot_id AND o.id = p.option_id
+         WHERE p.ballot_id = ? ORDER BY o.position",
+        id,
+    )
+    .await?;
     Ok(Ballot {
         id,
         token: BallotToken::from_store(row.token),
@@ -153,6 +158,7 @@ async fn load(conn: &mut SqliteConnection, row: BallotRow) -> sqlx::Result<Ballo
         created_at: millis::to_datetime(row.created_at)?,
         response,
         fallback: (!fallback.is_empty()).then_some(fallback),
+        preselection: (!preselection.is_empty()).then_some(preselection),
         group: row.group_name,
         voter_reference: row.voter_reference,
         theme: row.theme,
@@ -162,18 +168,37 @@ async fn load(conn: &mut SqliteConnection, row: BallotRow) -> sqlx::Result<Ballo
     })
 }
 
+/// The Option IDs `query` selects for the Ballot with this ID (bound as its
+/// one parameter), in the order it gives.
+async fn option_set(
+    conn: &mut SqliteConnection,
+    query: &'static str,
+    ballot_id: i64,
+) -> sqlx::Result<Vec<OptionId>> {
+    Ok(sqlx::query_scalar::<_, String>(query)
+        .bind(ballot_id)
+        .fetch_all(&mut *conn)
+        .await?
+        .into_iter()
+        .map(OptionId::from_store)
+        .collect())
+}
+
 async fn find_response(
     conn: &mut SqliteConnection,
     ballot_id: i64,
 ) -> sqlx::Result<Option<Response>> {
-    let row: Option<(i64, i64)> =
-        sqlx::query_as("SELECT answered_at, changed_at FROM responses WHERE ballot_id = ?")
+    let row: Option<(i64, i64, String)> =
+        sqlx::query_as("SELECT answered_at, changed_at, origin FROM responses WHERE ballot_id = ?")
             .bind(ballot_id)
             .fetch_optional(&mut *conn)
             .await?;
-    let Some((answered_at, changed_at)) = row else {
+    let Some((answered_at, changed_at, origin)) = row else {
         return Ok(None);
     };
+    // The schema's CHECK constraint admits only known names.
+    let origin = ResponseOrigin::from_name(&origin)
+        .ok_or_else(|| sqlx::Error::Decode("unknown response origin".into()))?;
     let option_ids = sqlx::query_scalar::<_, String>(
         "SELECT r.option_id FROM response_options r
          JOIN ballot_options o ON o.ballot_id = r.ballot_id AND o.id = r.option_id
@@ -189,5 +214,6 @@ async fn find_response(
         option_ids,
         answered_at: millis::to_datetime(answered_at)?,
         changed_at: millis::to_datetime(changed_at)?,
+        origin,
     }))
 }

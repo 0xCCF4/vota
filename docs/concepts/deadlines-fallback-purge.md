@@ -1,6 +1,6 @@
 # Voting Deadline, Fallback and Purge Date
 
-Every Ballot has two dates: the **Voting Deadline**, which closes voting, and the **Purge Date**, which deletes the Ballot. The Purge Date is never before the Voting Deadline. The database enforces this too (`CHECK (purge_date >= voting_deadline)`). An optional **Fallback** decides the result when no Response arrives in time.
+Every Ballot has two dates: the **Voting Deadline**, which closes voting, and the **Purge Date**, which deletes the Ballot. The Purge Date is never before the Voting Deadline. The database enforces this too (`CHECK (purge_date >= voting_deadline)`). An optional **Fallback** decides the result when no Response arrives in time. An optional **[Preselection](#preselection)** ticks Options for the voter; on an Editable Ballot it is recorded as the Response from the start, so the Fallback never applies there.
 
 ## Voting Deadline
 
@@ -24,7 +24,7 @@ Ballot Status is derived from the current time, never stored (see [Ballot lifecy
 
 - an **Auto-fallback** Ballot becomes **Unanswered**: `result` becomes `null`, the voter sees the form and the upcoming Fallback again, and the admin may edit its content again;
 - a closed **Unanswered** Ballot without a Fallback shows the form again (a `PATCH` that instead gives such a Ballot a Fallback applies it at once: the Ballot becomes Auto-fallback);
-- an **Answered** Editable Ballot accepts changes again; an Answered Final Ballot stays locked.
+- an **Answered** Editable Ballot accepts changes again; an Answered Final Ballot stays locked. An Editable Ballot whose Response is still its Preselection may be edited by the admin again (closed, it may not, see [Preselection](#preselection)).
 
 Real example: a Ballot whose deadline had just passed, with a Fallback, was extended by 20 days:
 
@@ -66,6 +66,7 @@ The Fallback is an optional set of the Ballot's own Options, chosen by the admin
 - **Given by Option labels** in the admin API (`"fallback": ["Friday 15 January"]`), because Options only get their IDs on creation, and new ones whenever the admin replaces them. Responses return it as `[{id, label}]` (admin) or `{"option_ids": [...]}` (voter).
 - **Obeys the Choice Mode, never empty**: exactly one Option on a single-choice Ballot, one or more on a multiple-choice Ballot, even one with Allow No Option (no Fallback means none; there is no "Fallback of no Option"). No duplicates. Only this Ballot's Options.
 - **Never applies after a Response**, including a Response of no Option on a Ballot with Allow No Option: the voter answered "none of these", and that is the result.
+- **Never applies on an Editable Ballot with a Preselection**: there the [Preselection](#preselection) is recorded as the Response from the start, so the Ballot is Answered and, if the voter never changes it, the Preselection is the result (`"source": "preselection"`). On a Final Ballot a Preselection only ticks the Options on the voting page, so the Fallback still applies if the voter never submits.
 - **Visible to the voter from the start**: the voting page says "If you don't answer by the deadline, this will be recorded: …", and the voter API has `fallback`. Only `result` and `status` say whether it has been applied.
 - **Applied, not written**: when the deadline passes without a Response, `status` becomes `auto_fallback` and `result` is `{"source": "fallback", …}`. Nothing in the database changes, which is why an extension can undo it.
 - **Locks the content once applied**: while the Ballot is Auto-fallback, a `PATCH` naming any field other than `group` and `voter_reference` gets `409 fallback_applied`, and nothing changes. This is checked before the values are looked at, and again in the same conditional write as the edit, at the request's time, so an edit can't land at or after the deadline. To change the Ballot anyway, extend the deadline first (see the example below). A Ballot whose deadline passed without a Fallback stays editable.
@@ -82,6 +83,13 @@ PATCH  {"voter_reference": "alice@example.com"}      → 200 "status":"auto_fall
 POST   …/extend {"voting_deadline": "2026-10-24T15:01:51Z"} → 200 "status":"unanswered"  "result":null
 PATCH  {"title": "New title"}                        → 200 "status":"unanswered"  "title":"New title"
 ```
+
+## Preselection
+
+The Preselection is an optional set of the Ballot's own Options, chosen by the admin, that the voting page shows ticked before the voter does. It is given and checked like the Fallback (by Option labels, obeying the Choice Mode, never empty; kept by label on edit, `null` removes it) and independent of it: both may be set and may differ. See [Ballot lifecycle](ballot-lifecycle.md#preselection) for what it does on Final and Editable Ballots. Around the deadline:
+
+- On an Editable Ballot, the Preselection recorded as the Response is the result once voting closes (`result.source` `"preselection"`; the page says "You kept the preselection, so this was recorded:"). Unlike the Fallback it is written, as a Response of origin `preselection`, so the voter API and the admin see it from the start.
+- While voting is open, the admin may still edit such a Ballot (the voter hasn't acted). Once voting has closed, the Preselection is the recorded result, and a content edit gets `409 already_answered` until the deadline is extended.
 
 ## The revision guard and `ballot_changed`
 

@@ -22,6 +22,9 @@
 //   unless the Ballot allows no Option. Then unticking everything saves the
 //   answer "no Option", and while the Ballot has no Response yet the Save
 //   button stays, so the voter can save "no Option" without ticking first.
+// - A Response recorded from the admin's Preselection is stored like any
+//   other, but not yet the voter's: Save stays, and saving the selection
+//   as it stands (even unchanged) makes it theirs.
 
 import { putResponse } from "./api.js";
 import { checkedIds, element, optionBox, optionInputs, submitButtons } from "./dom.js";
@@ -58,6 +61,8 @@ export function createAutosave(form, options) {
   const allowNoOption = () => options.config().allowNoOption;
   // What is stored: the Option IDs of the Response, or `null` without one.
   let stored = options.config().answered ? checkedIds(form) : null;
+  // Whether what is stored is the Preselection, not saved by the voter.
+  let preselected = stored !== null && options.config().preselected;
   // Whether the voter has asked for anything yet (a change, or Save): until
   // then, an empty selection without a Response is no answer, not "no
   // Option".
@@ -75,9 +80,10 @@ export function createAutosave(form, options) {
   form.setAttribute("data-vota-autosave", "");
   const buttons = submitButtons(form);
   // Without a Response on a Ballot that allows no Option, Save stays: it
-  // saves "no Option" as it stands.
+  // saves "no Option" as it stands. So it does while the Response is the
+  // Preselection: it saves that as the voter's.
   function hideButtons() {
-    const keep = stored === null && allowNoOption();
+    const keep = (stored === null && allowNoOption()) || preselected;
     buttons.forEach((button) => {
       button.hidden = !keep;
     });
@@ -245,7 +251,7 @@ export function createAutosave(form, options) {
     window.clearTimeout(retryTimer);
     retryTimer = null;
     const ids = wanted();
-    if (same(ids, stored)) {
+    if (same(ids, stored) && !preselected) {
       failure = null;
       render();
       return;
@@ -279,6 +285,7 @@ export function createAutosave(form, options) {
   function succeeded(ids) {
     const before = stored || [];
     stored = ids;
+    preselected = false;
     failure = null;
     hideButtons();
     for (const input of optionInputs(form)) {

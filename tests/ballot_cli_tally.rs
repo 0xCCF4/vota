@@ -90,14 +90,14 @@ fn tally_sums_up_a_groups_results_by_option_label() {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(
         texts(&output).0,
-        "Group: offsite  Ballots: 5  Answered: 3  By Fallback: 1  Open: 1\n\
+        "Group: offsite  Ballots: 5  Answered: 3  Preselected: 0  By Fallback: 1  Open: 1\n\
          \n\
-         OPTION  ANSWERED  FALLBACK  TOTAL\n\
-         Sushi          1         1      2\n\
-         Pizza          1         0      1\n\
-         Tacos          1         0      1\n\
-         Curry          0         0      0\n\
-         (none)         1         0      1\n\
+         OPTION  ANSWERED  PRESELECTED  FALLBACK  TOTAL\n\
+         Sushi          1            0         1      2\n\
+         Pizza          1            0         0      1\n\
+         Tacos          1            0         0      1\n\
+         Curry          0            0         0      0\n\
+         (none)         1            0         0      1\n\
          \n\
          Note: on multiple-choice Ballots each chosen Option counts once, \
          so the totals can exceed the number of Ballots.\n"
@@ -118,7 +118,7 @@ fn tally_with_json_prints_the_counts_as_a_documented_structure() {
     let tally: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let row = |option: serde_json::Value, answered: u64, fallback: u64| {
         serde_json::json!({
-            "option": option, "answered": answered, "fallback": fallback,
+            "option": option, "answered": answered, "preselected": 0, "fallback": fallback,
             "total": answered + fallback,
         })
     };
@@ -126,7 +126,7 @@ fn tally_with_json_prints_the_counts_as_a_documented_structure() {
         tally,
         serde_json::json!({
             "group": "offsite",
-            "ballots": 5, "answered": 3, "fallback": 1, "open": 1,
+            "ballots": 5, "answered": 3, "preselected": 0, "fallback": 1, "open": 1,
             "options": [
                 row("Sushi".into(), 1, 1),
                 row("Pizza".into(), 1, 0),
@@ -151,12 +151,12 @@ fn tally_with_csv_prints_one_record_per_option() {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(
         texts(&output).0,
-        "option,answered,fallback,total\r\n\
-         Sushi,1,1,2\r\n\
-         Pizza,1,0,1\r\n\
-         Tacos,1,0,1\r\n\
-         Curry,0,0,0\r\n\
-         ,1,0,1\r\n"
+        "option,answered,preselected,fallback,total\r\n\
+         Sushi,1,0,1,2\r\n\
+         Pizza,1,0,0,1\r\n\
+         Tacos,1,0,0,1\r\n\
+         Curry,0,0,0,0\r\n\
+         ,1,0,0,1\r\n"
     );
 }
 
@@ -177,11 +177,12 @@ fn tally_without_a_group_covers_all_live_ballots() {
     // Only single choice here: no note, and no `(none)` row.
     assert_eq!(
         texts(&output).0,
-        "Group: (all live Ballots)  Ballots: 2  Answered: 1  By Fallback: 0  Open: 1\n\
+        "Group: (all live Ballots)  Ballots: 2  Answered: 1  Preselected: 0  By Fallback: 0  \
+         Open: 1\n\
          \n\
-         OPTION  ANSWERED  FALLBACK  TOTAL\n\
-         Pizza          1         0      1\n\
-         Sushi          0         0      0\n"
+         OPTION  ANSWERED  PRESELECTED  FALLBACK  TOTAL\n\
+         Pizza          1            0         0      1\n\
+         Sushi          0            0         0      0\n"
     );
     let output = admin.ballot().args(["tally", "--json"]).output().unwrap();
     let tally: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -201,9 +202,9 @@ fn tally_of_an_empty_group_shows_zeros() {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(
         texts(&output).0,
-        "Group: nobody  Ballots: 0  Answered: 0  By Fallback: 0  Open: 0\n\
+        "Group: nobody  Ballots: 0  Answered: 0  Preselected: 0  By Fallback: 0  Open: 0\n\
          \n\
-         OPTION  ANSWERED  FALLBACK  TOTAL\n"
+         OPTION  ANSWERED  PRESELECTED  FALLBACK  TOTAL\n"
     );
 }
 

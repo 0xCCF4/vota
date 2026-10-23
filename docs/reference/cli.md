@@ -337,13 +337,14 @@ The examples below ran against `vota serve` with `public_base_url = "http://loca
 | `--voting-deadline <DATETIME\|DURATION>` | `voting_deadline`: RFC 3339, e.g. `2026-12-01T12:00:00+01:00`, or without an offset (`2026-12-01T12:00`) a local time in the server's [`default_time_zone`](configuration.md#default_time_zone); see [Conventions](admin-api.md#conventions). The client passes a timestamp on unchecked. Or a [relative date](#relative-dates): `3d` from now, and on `edit` `+1d` after the current Voting Deadline. |
 | `--purge-date <DATETIME\|DURATION\|+DURATION>` | `purge_date`, in the same forms; `+7d` is 7 days after the Voting Deadline of the same command, or on `edit` without one, the Ballot's current one. |
 | `--fallback <LABEL>` | `fallback`: an Option's label; repeat it for more than one. |
+| `--preselect <LABEL>` | `preselection`: an Option's label for the [Preselection](admin-api.md#preselection), ticked on the voting page; repeat it for more than one. On an editable Ballot it is recorded as the Response at once (the voter can change it until the deadline); on a final one the voter still submits and confirms. |
 | `--group <GROUP>` | `group` |
 | `--voter-reference <REF>` | `voter_reference`. On `create`, repeat it to create [many Ballots](#many-ballots-at-once) (`--voter-reference alice --voter-reference bob` sends a list); on `edit`, more than once is a usage error. |
 | `--theme <NAME>` | `theme` |
 | `--accent-color <#RRGGBB>` | `accent_color` |
 | `--logo <NAME>` | `logo` |
 
-**Removing a value** (`edit` only): `--clear-description`, `--clear-group`, `--clear-voter-reference`, `--clear-accent-color`, `--clear-logo` and `--clear-fallback` send `null` for their field. Each can't be combined with its own setter (`--clear-group --group x` is a usage error).
+**Removing a value** (`edit` only): `--clear-description`, `--clear-group`, `--clear-voter-reference`, `--clear-accent-color`, `--clear-logo`, `--clear-fallback` and `--clear-preselection` send `null` for their field. Each can't be combined with its own setter (`--clear-group --group x` is a usage error).
 
 **Raw JSON**: `--body <FILE|->` sends the file (or stdin) unchanged as the body, for fields or combinations the flags don't cover. It can't be combined with any field or `--clear-*` flag, and the client checks only that it is JSON.
 
@@ -425,7 +426,7 @@ Error: --voting-deadline +1d: + is relative to the current Voting Deadline, and 
 
 By default the output is for people. With `--json`, every command prints the server's JSON answer instead, pretty-printed, on stdout (`delete` prints nothing; [`tally`](#ballot-tally) prints its own documented JSON, since it is computed by the client), for scripts and `jq`. `create`, `list` and `tally` also print [CSV](#csv-output) with `--csv`, which can't be combined with `--json`. `create` and `get` have `--qr` (cargo feature `qr`), which adds a QR code of the URL on stderr.
 
-Text from the server is escaped before it is printed, like the [`admin-token list`](#admin-token-list) output: control, bidi and other invisible characters (and newlines inside a value) appear as `\u{…}` in the readable output and as JSON escapes with `--json`, so nothing from the server can steer the terminal. In CSV, line feeds and tabs are kept (a quoted cell may span lines) and every other such character appears as `\u{…}`. The server already refuses such characters in every text field.
+The client treats every answer as untrusted input ([the client side of the trust boundary](../concepts/trust-boundary.md#the-client-side-server-answers)): text from the server is escaped before it is printed, like the [`admin-token list`](#admin-token-list) output. Control, bidi and other invisible characters (and newlines inside a value) appear as `\u{…}` in the readable output and in error messages, and as JSON escapes with `--json` (the parsed answer, re-serialized: the same JSON value), so nothing from the server can steer the terminal. In CSV, line feeds and tabs are kept (a quoted cell may span lines) and every other such character appears as `\u{…}`. A Ballot's URL is shown (and drawn by `--qr`) as the `url` crate writes it, so such a character in it appears percent-encoded (`%1B`); a URL that isn't `http` or `https` is shown as escaped text. The server already refuses such characters in every text field. Fields the client doesn't know are ignored, and a field it can't read (an unknown Ballot Status, say) is shown as its text, escaped.
 
 ### CSV output
 
@@ -475,7 +476,7 @@ $ vota ballot create --title "Lunch on Friday?" --option Pizza --option Sushi --
 http://localhost:8080/b/_W1FHrvJeCrOhLlx2wRZXw
 ```
 
-The code uses Unicode half blocks (`▀`, `▄`, `█`, two modules per character) with the standard quiet zone of four modules. Light modules are drawn in the terminal's text colour and dark ones left blank, so on the usual light text on a dark background it shows dark on light, as scanners expect (on a light background it shows inverted, which most phone cameras read as well). With `--json`, `--csv` or neither, stdout is unaffected. `--qr` with many Ballots is a usage error (exit 2), before anything is sent.
+The code uses Unicode half blocks (`▀`, `▄`, `█`, two modules per character) with the standard quiet zone of four modules. Light modules are drawn in the terminal's text colour and dark ones left blank, so on the usual light text on a dark background it shows dark on light, as scanners expect (on a light background it shows inverted, which most phone cameras read as well). With `--json`, `--csv` or neither, stdout is unaffected. `--qr` with many Ballots is a usage error (exit 2), before anything is sent; a Ballot whose `url` is not an `http` or `https` URL is an unexpected answer (exit 1).
 
 Every field at once:
 
@@ -549,7 +550,7 @@ Error: 409 duplicate_voter_reference: another Ballot in this Group already has t
 
 ### `ballot get`
 
-`GET /admin/ballots/{id}`. With `--qr` (cargo feature `qr`) it also draws the Ballot's URL as a QR code on stderr, as [`create --qr`](#ballot-create) does. Prints the admin view as a block: the URL, Ballot Status, Group, Voter Reference, modes, dates, Theme Tweaks, description, Options with their IDs, Fallback, Response and result. `-` stands for no value. This Ballot (2, above) had a Response from its voter:
+`GET /admin/ballots/{id}`. With `--qr` (cargo feature `qr`) it also draws the Ballot's URL as a QR code on stderr, as [`create --qr`](#ballot-create) does. Prints the admin view as a block: the URL, Ballot Status, Group, Voter Reference, modes, dates, Theme Tweaks, description, Options with their IDs, Fallback, Preselection, Response and result. `-` stands for no value. This Ballot (2, above) had a Response from its voter:
 
 ```text
 $ vota ballot get 2
@@ -574,11 +575,12 @@ Options:
   _Dm4qGewlEM  Friday 15 January
   GoctB57_Sj0  Saturday 16 January
 Fallback:        Friday 15 January
+Preselection:    -
 Response:        Thursday 14 January (answered 2026-10-20T08:58:12.767Z, changed 2026-10-20T08:58:12.767Z)
 Result:          Thursday 14 January (from the Response)
 ```
 
-`Result` names its source: `from the Response`, or `from the Fallback` once the Fallback applied (Ballot Status `auto_fallback`). A Response of no Option (on a Ballot with Allow No Option) shows as `(none)`, e.g. `Result:          (none) (from the Response)`, while `-` means no Response or no result at all.
+`Result` names its source: `from the Response`, `from the Preselection` (an editable Ballot whose Response is still the [Preselection](admin-api.md#preselection)), or `from the Fallback` once the Fallback applied (Ballot Status `auto_fallback`). Such a preselected Response shows as e.g. `Response:        Pizza (preselected 2026-10-20T08:58:12.524Z, not saved by the voter)`; once the voter saves, even the same Options, it shows `(answered …, changed …)` and `from the Response`. A Response of no Option (on a Ballot with Allow No Option) shows as `(none)`, e.g. `Result:          (none) (from the Response)`, while `-` means no Response or no result at all.
 
 ```text
 $ vota ballot get 1 --json
@@ -602,6 +604,7 @@ $ vota ballot get 1 --json
       "label": "Sushi"
     }
   ],
+  "preselection": null,
   "purge_date": "2026-11-24T12:00:00Z",
   "response": null,
   "result": null,
@@ -646,7 +649,7 @@ With `--csv` it prints one [CSV](#csv-output) record per Ballot, in the same ord
 | `voting_deadline`, `purge_date` | RFC 3339 UTC, as the API gives them. |
 | `choice_mode`, `submission_mode` | `single`/`multiple`, `final`/`editable`. |
 | `result` | The result's Option labels in Option order, joined with `; `. Empty without a result, and for a Response of no Option. |
-| `result_source` | `answered` (the voter's Response), `fallback` (the Fallback applied) or empty (no result yet). So `answered` with an empty `result` is a Response of no Option. |
+| `result_source` | `answered` (the voter's Response), `preselected` (the [Preselection](admin-api.md#preselection), recorded as the Response of an editable Ballot the voter hasn't saved), `fallback` (the Fallback applied) or empty (no result yet). So `answered` with an empty `result` is a Response of no Option. |
 
 There are no URLs and no Ballot Tokens in it, so the file can be shared without handing out anyone's Ballot. A label that contains `; ` itself can't be told apart in `result`; take `--json` for exact values.
 
@@ -671,19 +674,19 @@ Sums up the results of a Group's Ballots, by Option label. It sends the request 
 
 ```text
 $ vota ballot tally --group offsite-2027
-Group: offsite-2027  Ballots: 5  Answered: 3  By Fallback: 1  Open: 1
+Group: offsite-2027  Ballots: 5  Answered: 3  Preselected: 0  By Fallback: 1  Open: 1
 
-OPTION               ANSWERED  FALLBACK  TOTAL
-Friday 15 January           2         1      3
-Thursday 14 January         2         0      2
-Saturday 16 January         0         0      0
-(none)                      1         0      1
+OPTION               ANSWERED  PRESELECTED  FALLBACK  TOTAL
+Friday 15 January           2            0         1      3
+Thursday 14 January         2            0         0      2
+Saturday 16 January         0            0         0      0
+(none)                      1            0         0      1
 
 Note: on multiple-choice Ballots each chosen Option counts once, so the totals can exceed the number of Ballots.
 ```
 
-- **The header line** counts the Ballots: Answered (the result is the voter's Response), By Fallback (Auto-fallback), Open (no result yet: Unanswered, also after a deadline without a Fallback).
-- **Options are counted by label.** The same label on different Ballots is the same Option, whatever its ID; labels are compared exactly as stored (the server NFC-normalises them), so `Pizza` and `pizza` are two rows. Every Option of every Ballot in the Group gets a row, also one nobody chose (TOTAL `0`). ANSWERED counts the Responses that chose it, FALLBACK the applied Fallbacks that hold it, TOTAL is both.
+- **The header line** counts the Ballots: Answered (the result is the voter's Response), Preselected (the result is the [Preselection](admin-api.md#preselection), recorded as the Response of an editable Ballot the voter hasn't saved; such a Ballot's Ballot Status is `answered` too), By Fallback (Auto-fallback), Open (no result yet: Unanswered, also after a deadline without a Fallback).
+- **Options are counted by label.** The same label on different Ballots is the same Option, whatever its ID; labels are compared exactly as stored (the server NFC-normalises them), so `Pizza` and `pizza` are two rows. Every Option of every Ballot in the Group gets a row, also one nobody chose (TOTAL `0`). ANSWERED counts the voters' Responses that chose it, PRESELECTED the preselected Responses that hold it, FALLBACK the applied Fallbacks that hold it, TOTAL all three.
 - **Order**: TOTAL descending, then label (in Unicode code point order).
 - **`(none)`**: a Response of no Option ([Allow No Option](admin-api.md#request-fields)) counts in the `(none)` row, which comes last. It is shown when a Ballot in the Group allows no Option or such a Response was counted. (An Option that is itself labelled `(none)` would look the same in this table; `--json` and `--csv` tell them apart.)
 - **Multiple choice**: each chosen Option counts once, so the totals can exceed the number of Ballots. The note below the table appears when the Group has a multiple-choice Ballot.
@@ -699,29 +702,30 @@ With `--json` it prints (each row of `options` is shown on one line here):
   "group": "offsite-2027",
   "open": 1,
   "options": [
-    { "answered": 2, "fallback": 1, "option": "Friday 15 January", "total": 3 },
-    { "answered": 2, "fallback": 0, "option": "Thursday 14 January", "total": 2 },
-    { "answered": 0, "fallback": 0, "option": "Saturday 16 January", "total": 0 },
-    { "answered": 1, "fallback": 0, "option": null, "total": 1 }
-  ]
+    { "answered": 2, "fallback": 1, "option": "Friday 15 January", "preselected": 0, "total": 3 },
+    { "answered": 2, "fallback": 0, "option": "Thursday 14 January", "preselected": 0, "total": 2 },
+    { "answered": 0, "fallback": 0, "option": "Saturday 16 January", "preselected": 0, "total": 0 },
+    { "answered": 1, "fallback": 0, "option": null, "preselected": 0, "total": 1 }
+  ],
+  "preselected": 0
 }
 ```
 
 | Field | Meaning |
 | ----- | ------- |
 | `group` | The `--group` given (as typed, before the server's trimming and normalisation), or `null` for all live Ballots. |
-| `ballots`, `answered`, `fallback`, `open` | The header line's counts. |
-| `options` | The table's rows in its order: `option` is the label, or `null` for a Response of no Option; `answered`, `fallback` and `total` as in the table. |
+| `ballots`, `answered`, `preselected`, `fallback`, `open` | The header line's counts. |
+| `options` | The table's rows in its order: `option` is the label, or `null` for a Response of no Option; `answered`, `preselected`, `fallback` and `total` as in the table. |
 
-With `--csv` it prints the table as `option,answered,fallback,total`, the `option` cell empty for a Response of no Option (no Option has an empty label), without the header line and the note:
+With `--csv` it prints the table as `option,answered,preselected,fallback,total`, the `option` cell empty for a Response of no Option (no Option has an empty label), without the header line and the note:
 
 ```text
 $ vota ballot tally --group offsite-2027 --csv
-option,answered,fallback,total
-Friday 15 January,2,1,3
-Thursday 14 January,2,0,2
-Saturday 16 January,0,0,0
-,1,0,1
+option,answered,preselected,fallback,total
+Friday 15 January,2,0,1,3
+Thursday 14 January,2,0,0,2
+Saturday 16 January,0,0,0,0
+,1,0,0,1
 ```
 
 Its exit codes and connection flags are those of every `ballot` command. An answer it can't count (a result of an unknown source) is an unexpected answer (exit 1).
@@ -751,11 +755,12 @@ Options:
   -t9aTrCMVu0  Pizza
   qR37rjq-03E  Sushi
 Fallback:        -
+Preselection:    -
 Response:        -
 Result:          -
 ```
 
-The API's [rules for edits](admin-api.md#what-may-be-edited-when) apply: only the Group and Voter Reference may change once the Ballot is Answered or Auto-fallback.
+The API's [rules for edits](admin-api.md#what-may-be-edited-when) apply: only the Group and Voter Reference may change once the Ballot is Answered or Auto-fallback (an editable Ballot answered only by its [Preselection](admin-api.md#preselection) stays editable while voting is open).
 
 ```text
 $ vota ballot edit 2 --title "New title"
@@ -808,7 +813,7 @@ Purge Date:      2026-11-24T12:00:00Z
 
 ### Errors
 
-Errors go to stderr as `Error: <status> <error code>: <message>`, with ` (field: <field>)` for a `422` that names a field, and the waiting time for a `429`. An answer without an error code shows the status's reason instead. With `--json`, the server's error body also goes to stdout (pretty-printed; a non-JSON body as escaped text):
+Errors go to stderr as `Error: <status> <error code>: <message>`, with ` (field: <field>)` for a `422` that names a field, and the waiting time for a `429`. An answer without an error code shows the status's reason instead. The whole message is escaped, whatever it quotes (the server's texts, a `Location`, a flag value, a TLS error naming the server's certificate). With `--json`, the server's error body also goes to stdout (pretty-printed; a non-JSON body as escaped text):
 
 ```text
 $ vota ballot get 3

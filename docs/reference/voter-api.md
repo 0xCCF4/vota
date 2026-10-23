@@ -54,6 +54,7 @@ curl -s http://localhost:8080/api/b/fqps4Y5QXH9JOgytT1czCw
     { "id": "otO0JCJbJ88", "label": "Friday 15 January" },
     { "id": "kDH9L13ZxRg", "label": "Saturday 16 January" }
   ],
+  "preselection": null,
   "response": null,
   "result": null,
   "revision": 0,
@@ -79,8 +80,9 @@ curl -s http://localhost:8080/api/b/fqps4Y5QXH9JOgytT1czCw
 | `voting_open`     | boolean                    | `now < voting_deadline`. |
 | `status`          | `"unanswered"` / `"answered"` / `"auto_fallback"` | See [Ballot lifecycle](../concepts/ballot-lifecycle.md). |
 | `fallback`        | `{option_ids}` or `null`   | What is recorded if no Response comes by the deadline. Shown from the start. Only `result` says whether it has been applied. |
-| `result`          | `{source, option_ids}` or `null` | `source` is `"response"` or `"fallback"`. |
-| `response`        | `{option_ids, answered_at, changed_at}` or `null` | The voter's current Response; `null` without one. `option_ids` is `[]` for a Response of no Option. |
+| `preselection`    | `{option_ids}` or `null`   | The Preselection: the Options the voting page ticks before the voter does. On a Final Ballot only that (nothing is recorded until the voter submits). On an Editable Ballot it is also recorded as the Response from the start (`response.origin` `"preselection"`). |
+| `result`          | `{source, option_ids}` or `null` | `source` is `"response"`, `"preselection"` (the Preselection recorded as the Response, not saved by the voter) or `"fallback"`. |
+| `response`        | `{option_ids, answered_at, changed_at, origin}` or `null` | The current Response; `null` without one. `option_ids` is `[]` for a Response of no Option. `origin` is `"voter"`, or `"preselection"` on an Editable Ballot whose Response is still the admin's Preselection. |
 | `theme`           | string                     | The Theme the page is rendered in. If the Ballot's Theme has since been removed, this is the default `classic`. |
 | `accent_color`    | `#rrggbb` or `null`        | The accent colour Theme Tweak. |
 | `logo_url`        | string or `null`           | Absolute URL (`<public_base_url>assets/logos/<name>`, e.g. `https://example.org/polls/assets/logos/acme`), or `null` without a logo or if it has been removed since. |
@@ -107,7 +109,7 @@ The checks run in this order:
 9. A well-formed ID that is not one of this Ballot's current Options → `409 ballot_changed`. This is most likely an Option the admin replaced while the page was open. The answer is the same whether or not the ID exists on another Ballot.
 10. Wrong count for the Choice Mode (an empty list is fine only with `allow_no_option`) → `422`.
 
-The Response is then recorded in one conditional write, which re-checks the deadline, the Final lock and that the Ballot's revision is still the one sent (see [Ballot lifecycle](../concepts/ballot-lifecycle.md#concurrency-guarantees)). On success the answer is `200` with the updated voter view (as for `GET`). On an Editable Ballot a new Response replaces the old one: `answered_at` stays the time of the first, and `changed_at` moves.
+The Response is then recorded in one conditional write, which re-checks the deadline, the Final lock and that the Ballot's revision is still the one sent (see [Ballot lifecycle](../concepts/ballot-lifecycle.md#concurrency-guarantees)). On success the answer is `200` with the updated voter view (as for `GET`). On an Editable Ballot a new Response replaces the old one: `answered_at` stays the time of the first, and `changed_at` moves. A Response that is still the Preselection (`origin` `"preselection"`) is replaced the same way, **even by the very same Options**: the Response becomes the voter's (`origin` `"voter"`), with `answered_at` and `changed_at` the time of this first save of theirs. So a client that wants to keep the preselected answer as the voter's sends it back unchanged.
 
 ```sh
 curl -s -X PUT http://localhost:8080/api/b/fqps4Y5QXH9JOgytT1czCw/response \
@@ -121,7 +123,8 @@ curl -s -X PUT http://localhost:8080/api/b/fqps4Y5QXH9JOgytT1czCw/response \
   "response": {
     "answered_at": "2026-10-17T10:51:05.966Z",
     "changed_at": "2026-10-17T10:51:05.966Z",
-    "option_ids": ["asWoSUcc7Ts"]
+    "option_ids": ["asWoSUcc7Ts"],
+    "origin": "voter"
   },
   "result": {
     "option_ids": ["asWoSUcc7Ts"],
@@ -220,9 +223,12 @@ curl -s http://localhost:8080/api/b/kKNCBW_dN2-Luu8lQj4q5A
 | State                                     | The page shows |
 | ----------------------------------------- | -------------- |
 | Open, no Response                         | A status pill "Open", the deadline, the form (Options as cards: radio buttons for single choice, checkboxes for multiple, under "Choose any number of options (or none)" with Allow No Option), "You can change your answer until then." (Editable) or "Once you submit your answer, you cannot change it." beside the button (Final), and, if there is a Fallback, its Options marked "default" on their cards with the hint "No answer by the deadline? The Option marked default will be recorded." |
+| Open, Final, with a Preselection          | As "Open, no Response", with the Preselection's Options ticked and the hint "Preselected; confirm or change, then submit." The confirmation step works as without one; nothing is recorded before it. |
 | Open, Editable, answered                  | "Answered", the form pre-filled with the current Response, "Your answer is saved. You can change it until then.", button "Change answer". |
+| Open, Editable, answered by the Preselection | "Answered", the form with the Preselection's Options ticked, "Preselected for you. You can change it until voting closes.", button "Save answer" (which saves the ticked Options as the voter's, even unchanged). |
 | Open, Final, answered                     | Read-only: "Answered", "Your answer has been recorded." and "You chose" with the chosen Options as chips ("You chose no option." for a Response of no Option). |
 | Closed with a Response                    | "Closed", "You chose" with the chosen Options as chips ("You chose no option." for a Response of no Option). |
+| Closed with the Preselection as Response  | "Closed", "You kept the preselection, so this was recorded:" with its Options as chips. |
 | Closed, no Response, Fallback             | "Closed", "No answer was given, so this was recorded:" with the Fallback's Options as chips. |
 | Closed, no Response, no Fallback          | "Closed", "No answer was given." |
 
@@ -302,14 +308,14 @@ The not-found page is neutral and unthemed: "Not found. This link does not lead 
 The app inserts its own script (native ES modules under `/assets/app/<version>/`, entry `main.js`) and stylesheet (`/assets/app/ballot.css`) into every voting page, right before `</head>`. Themes cannot remove them. Browsers without module support get the plain page, which works fully. With JavaScript the script:
 
 - rewrites every `<time datetime>` into the voter's local time zone, short and without a zone name ("Today, 18:00", "Tomorrow, 09:30", "Tue 1 Dec, 13:00", with the year only when it isn't this year), with the precise date and zone as its tooltip; and fills the template's countdown placeholder ("in 2 days, 4 hours"), corrected for a skewed client clock using the server's "now". At the deadline it disables the form and reloads to the closed view, with or without a placeholder.
-- on an **Editable** Ballot hides the Submit button and saves every change at once through `PUT /api/b/{token}/response` (with the page's `revision`): the changed Options show "Saving…", then a fading "Saved" highlight, or "Not saved" in red until resolved, and a status line (`role="status"`) says the same. At most one request is in flight; changes made meanwhile are coalesced and the latest selection is sent next (multiple choice waits 400 ms for further clicks). With Allow No Option, unticking every box saves the Response of no Option, and while the Ballot has no Response the Save button stays visible, so the voter can save "no Option" without ticking anything first. Transient failures (no connection, timeout, `5xx`, `429` with its `Retry-After`) are retried after 1, 2, 4 and 8 seconds, then every 15 seconds, for about two minutes ("Not saved, retrying…", with "Retry now"); coming back online or to the tab retries at once. Without Allow No Option an empty multiple-choice selection is not sent ("Not saved: select at least one Option."). Leaving the page while something is not saved asks for confirmation. After the first save the page body is refreshed in place.
+- on an **Editable** Ballot hides the Submit button and saves every change at once through `PUT /api/b/{token}/response` (with the page's `revision`): the changed Options show "Saving…", then a fading "Saved" highlight, or "Not saved" in red until resolved, and a status line (`role="status"`) says the same. At most one request is in flight; changes made meanwhile are coalesced and the latest selection is sent next (multiple choice waits 400 ms for further clicks). With Allow No Option, unticking every box saves the Response of no Option, and while the Ballot has no Response the Save button stays visible, so the voter can save "no Option" without ticking anything first. A Response that is still the Preselection counts as saved: the page starts from it, and the Save button stays visible, saving the ticked Options as the voter's (even unchanged); any change saves too, and makes the Response the voter's. Transient failures (no connection, timeout, `5xx`, `429` with its `Retry-After`) are retried after 1, 2, 4 and 8 seconds, then every 15 seconds, for about two minutes ("Not saved, retrying…", with "Retry now"); coming back online or to the tab retries at once. Without Allow No Option an empty multiple-choice selection is not sent ("Not saved: select at least one Option."). Leaving the page while something is not saved asks for confirmation. After the first save the page body is refreshed in place.
 - on a **Final** Ballot keeps the Submit button: it asks for confirmation in a dialog instead of the confirmation page ("You chose no option." for an empty selection with Allow No Option; without it, an empty selection is refused in the page), then saves with a dialog showing "Saving…", then "Saved ✓" or the error. The page body is then refreshed in place.
 - maps errors to messages: `voting_closed`, `already_answered` and `ballot_changed` show a message in a dialog and reload; `404` shows "This Ballot could not be found. It may have been deleted." and reloads; these and other `4xx` are never retried. `422` shows the server's `message`; `429` shows "Too many requests, try again later."
 
-The script gets what it needs from `data-*` attributes on its own `<script type="module" id="vota-enhancement">` tag (`data-api`, `data-page`, `data-deadline`, `data-now`, `data-open`, `data-revision`, `data-choice-mode`, `data-submission-mode`, `data-needs-confirmation`, `data-allow-no-option`, `data-answered`), never from inline script:
+The script gets what it needs from `data-*` attributes on its own `<script type="module" id="vota-enhancement">` tag (`data-api`, `data-page`, `data-deadline`, `data-now`, `data-open`, `data-revision`, `data-choice-mode`, `data-submission-mode`, `data-needs-confirmation`, `data-allow-no-option`, `data-answered`, `data-preselected`: whether that Response is still the Preselection), never from inline script:
 
 ```html
-<script type="module" src="/assets/app/0d4c1e7a9b2f6835/main.js" id="vota-enhancement" data-api="/api/b/ClwSuvpBK5TgduvIOXZ9ng/response" data-page="/b/ClwSuvpBK5TgduvIOXZ9ng" data-deadline="2026-12-01T12:00:00Z" data-now="2026-10-17T10:52:09.659395927Z" data-open="true" data-revision="0" data-choice-mode="single" data-submission-mode="editable" data-needs-confirmation="false" data-allow-no-option="false" data-answered="false"></script>
+<script type="module" src="/assets/app/0d4c1e7a9b2f6835/main.js" id="vota-enhancement" data-api="/api/b/ClwSuvpBK5TgduvIOXZ9ng/response" data-page="/b/ClwSuvpBK5TgduvIOXZ9ng" data-deadline="2026-12-01T12:00:00Z" data-now="2026-10-17T10:52:09.659395927Z" data-open="true" data-revision="0" data-choice-mode="single" data-submission-mode="editable" data-needs-confirmation="false" data-allow-no-option="false" data-answered="false" data-preselected="false"></script>
 ```
 
 It makes no requests to other hosts. For what a Theme must keep so the script works, see the [Themes and logos guide](../guides/themes-and-logos.md#the-voting-pages-script).

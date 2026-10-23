@@ -83,11 +83,12 @@ The authoritative list is the module comment in `src/web/templates.rs`. Every va
 
 | Variable            | Value |
 | ------------------- | ----- |
-| `options`           | All Options, each with `id`, `label` and `checked` (in the current Response). |
+| `options`           | All Options, each with `id`, `label` and `checked` (in the current Response; without one, while voting is open, in the Preselection). |
 | `multiple`          | `true` on a multiple-choice Ballot (checkboxes), `false` on single choice (radio buttons). |
 | `allow_no_option`   | `true` if the voter may answer with no Option at all (Allow No Option, multiple choice only). The built-in legend then reads "Choose any number of options (or none)". |
 | `editable`          | `true` if the Submission Mode is Editable. |
 | `answered`          | `true` if the Ballot has a Response. |
+| `preselected`       | `true` if the ticked Options are the admin's Preselection, not the voter's choice: on a Final Ballot without a Response while voting is open (the built-in template then says "Preselected; confirm or change, then submit."), or on an Editable Ballot whose Response is still the Preselection, which the voter hasn't saved (then `answered` is `true` too; the built-in template says "Preselected for you. You can change it until voting closes." and, once closed, "You kept the preselection, so this was recorded:"). |
 | `read_only`         | `true` if the Response is shown without a form (Final and answered, or closed with a Response). |
 | `closed`            | `true` once the Voting Deadline has passed. |
 | `selected`          | Options of the current Response (`id`, `label`); empty without one, and also for a Response of no Option (tell them apart by `answered`; the built-in template then says "You chose no option."). |
@@ -143,11 +144,12 @@ The built-in Themes style these class names; a Theme that keeps the built-in tem
 | `meta` | The row under the title: `.status`, `.deadline` (with `<time>` and the `.vota-countdown` placeholder) and, on its own line, `.submission-mode` or `.recorded`. |
 | `status` | The status pill: `data-state="open"`, `"answered"` or `"closed"`, its text `Open`, `Answered` or `Closed` (after a visually hidden "Status: "), the Ballot Status in its `title`. |
 | `submission-mode` | "You can change your answer until then." (Editable, in `.meta`); with `final`: "Once you submit your answer, you cannot change it." (Final, in `.actions` beside the button). |
-| `recorded` | "Your answer has been recorded." (Final, answered), or with `submission-mode` "Your answer is saved. You can change it until then." (Editable, answered). |
+| `recorded` | "Your answer has been recorded." (Final, answered), or with `submission-mode` "Your answer is saved. You can change it until then." (Editable, answered); with `preselected` too, "Preselected for you. You can change it until voting closes." (Editable, answered by the Preselection). |
 | `description`, `message` | The description; a notice why a post was refused (`role="alert"`). |
 | `fallback` | While open with a Fallback: the hint "No answer by the deadline? The Option marked default will be recorded." (`id="fallback-hint"`, which the Fallback's inputs name in `aria-describedby`). |
+| `preselection-hint` | On a Final Ballot with a Preselection, while open and unanswered: the hint "Preselected; confirm or change, then submit." above the Options. |
 | `fallback-badge` | The small "default" badge on each Fallback Option's card (and in the hint). |
-| `outcome` | Read-only and closed views: one line, `p.chosen` or `p.closed` ("You chose", "No answer was given, so this was recorded:", "No answer was given.") and the `ul.selection` chips (`fallback-applied` when the Fallback was recorded). |
+| `outcome` | Read-only and closed views: one line, `p.chosen` or `p.closed` ("You chose", "You kept the preselection, so this was recorded:", "No answer was given, so this was recorded:", "No answer was given.") and the `ul.selection` chips (`fallback-applied` when the Fallback was recorded). |
 | `options`, `option` | The Option cards inside the `fieldset`; each `.option` holds the input, its `label` and maybe a `.fallback-badge`. |
 | `actions` | The submit button's row (and the script's status line on an Editable Ballot). |
 | `visually-hidden` | Text for screen readers only (the built-in Themes define it). |
@@ -191,7 +193,7 @@ Templates don't include the app's script. The app inserts it and its stylesheet 
 
 ```html
 <link rel="stylesheet" href="/assets/app/ballot.css?v=ba35bbdb81344a06">
-<script type="module" src="/assets/app/0d4c1e7a9b2f6835/main.js" id="vota-enhancement" data-api="…" data-page="…" data-deadline="…" data-now="…" data-open="true" data-revision="0" data-choice-mode="single" data-submission-mode="final" data-needs-confirmation="true" data-allow-no-option="false" data-answered="false"></script>
+<script type="module" src="/assets/app/0d4c1e7a9b2f6835/main.js" id="vota-enhancement" data-api="…" data-page="…" data-deadline="…" data-now="…" data-open="true" data-revision="0" data-choice-mode="single" data-submission-mode="final" data-needs-confirmation="true" data-allow-no-option="false" data-answered="false" data-preselected="false"></script>
 ```
 
 So a Theme can't drop it. The script is a set of native ES modules (`main.js` imports its siblings relatively); it finds its own tag by the id `vota-enhancement`, so a Theme must not give that id to anything else. Browsers without module support get the plain no-JS page. The stylesheet comes after the Theme's stylesheet, but every styling rule is wrapped in `:where()` (zero specificity), so a Theme's own rules win; only the rules hiding the autosaved form's Submit button and an idle "Retry now" use `!important`.
@@ -420,7 +422,7 @@ The head of the page shows the Theme's stylesheet, the accent colour Tweak in a 
 <style nonce="Feyo432_Die-QTT4EiNgNg">:root { --accent: #1f6f8b; --accent-contrast: #ffffff; }</style>
 
 <link rel="stylesheet" href="/assets/app/ballot.css?v=ba35bbdb81344a06">
-<script type="module" src="/assets/app/0d4c1e7a9b2f6835/main.js" id="vota-enhancement" data-api="/api/b/-hOo6wzrXM9ygkWznaPMCA/response" data-page="/b/-hOo6wzrXM9ygkWznaPMCA" data-deadline="2026-12-01T12:00:00Z" data-now="2026-10-17T10:52:53.567077535Z" data-open="true" data-revision="0" data-choice-mode="single" data-submission-mode="final" data-needs-confirmation="true" data-allow-no-option="false" data-answered="false"></script>
+<script type="module" src="/assets/app/0d4c1e7a9b2f6835/main.js" id="vota-enhancement" data-api="/api/b/-hOo6wzrXM9ygkWznaPMCA/response" data-page="/b/-hOo6wzrXM9ygkWznaPMCA" data-deadline="2026-12-01T12:00:00Z" data-now="2026-10-17T10:52:53.567077535Z" data-open="true" data-revision="0" data-choice-mode="single" data-submission-mode="final" data-needs-confirmation="true" data-allow-no-option="false" data-answered="false" data-preselected="false"></script>
 </head>
 <body>
 

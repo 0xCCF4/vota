@@ -1,6 +1,6 @@
 # Trust boundary and sanitization
 
-Every value that comes from outside the process is untrusted until a sanitizer has checked it. All sanitizers live in one module, `src/input/`, so a security review can concentrate there. This page describes how that works and lists every rule.
+Every value that comes from outside the process is untrusted until a sanitizer has checked it. All of the server's sanitizers live in one module, `src/input/`, so a security review can concentrate there. This page describes how that works and lists every rule. The admin API client, `vota ballot`, treats the server's answers the same way, in a module of its own: see [the client side](#the-client-side-server-answers).
 
 ## The `untrusted_value` pattern
 
@@ -39,13 +39,13 @@ flowchart LR
 | Query strings (`GET /admin/ballots`) | Parsed like forms. Unknown parameters are rejected (`"field": null`). Each parameter at most once. Invalid UTF-8 in a known parameter's value names the parameter. |
 | Enums (`choice_mode`, `submission_mode`, `status`) | Exact match against the known names: no trimming, no case folding. Absent means the default (create) or the current value (edit). `null` is rejected. |
 | Bulk creation (`POST /admin/ballots`) | `voter_reference` as a list: 1 to 1000 entries, each single-line text, no entry twice after normalisation (`voter_reference[i]`); a longer list is refused before its entries are sanitized. `count`: a JSON integer from 1 to 1000, only with a `group` and without `voter_reference`. The numbered Voter References are built by the server from plain decimal digits. See [many Ballots at once](../reference/admin-api.md#many-ballots-at-once). |
-| Optional fields | May be absent. `null` is rejected on creation. On edit, `null` removes the value for `description`, `fallback`, `group`, `voter_reference`, `accent_color` and `logo`, and is rejected for every other field. |
+| Optional fields | May be absent. `null` is rejected on creation. On edit, `null` removes the value for `description`, `fallback`, `preselection`, `group`, `voter_reference`, `accent_color` and `logo`, and is rejected for every other field. |
 
 ## Text
 
 | Kind | Applies to | Rules |
 | ---- | ---------- | ----- |
-| Single-line text | `title`, Option `label`, `group`, `voter_reference` (each entry of a list too), Fallback labels, `group` filter, Admin Token labels (CLI) | Unicode NFC normalisation, then trim leading and trailing whitespace. Must not be empty. Rejects control characters (including newline and tab) and invisible, private-use and unassigned characters (see below), and more than four combining marks on one base character. Length is counted in characters **after** normalisation. |
+| Single-line text | `title`, Option `label`, `group`, `voter_reference` (each entry of a list too), Fallback and Preselection labels, `group` filter, Admin Token labels (CLI) | Unicode NFC normalisation, then trim leading and trailing whitespace. Must not be empty. Rejects control characters (including newline and tab) and invisible, private-use and unassigned characters (see below), and more than four combining marks on one base character. Length is counted in characters **after** normalisation. |
 | Multi-line text | `description` | First `\r\n` and lone `\r` become `\n`. Then the same as single-line, except that newline and tab are allowed. |
 
 The rejected characters, so that texts that look alike can't pass as different (e.g. the Option labels `A` and `A` followed by an invisible variation selector):
@@ -76,6 +76,7 @@ The voter API returns the source, not HTML.
 | `voting_deadline` | admin create/edit/extend | string | [RFC 3339](#timestamps) with offset (`Z` or `±hh:mm`), or a [local date-time](#timestamps) in `default_time_zone`; after now; at most now + `max_date_horizon`; on extend also later than the current one | `422 voting_deadline` |
 | `purge_date` | admin create/edit | string | [RFC 3339](#timestamps) with offset, or a [local date-time](#timestamps) in `default_time_zone`; after now; at most now + `max_date_horizon`; not before the (resulting) Voting Deadline | `422 purge_date` |
 | `fallback` | admin create/edit | array of strings | Option labels, each normalised like a label and matching one of the (resulting) Options exactly; no duplicates; count obeys the Choice Mode (never empty) | `422 fallback` / `fallback[i]` |
+| `preselection` | admin create/edit | array of strings | as `fallback` (never empty, even with Allow No Option) | `422 preselection` / `preselection[i]` |
 | `group` | admin create/edit, list filter | string | single-line text, 1–200 characters; the filter matches literally | `422 group` |
 | `voter_reference` | admin create/edit | string | single-line text, 1–200 characters; unique within the Group | `422 voter_reference`; duplicate: `409 duplicate_voter_reference` |
 | `theme` | admin create/edit | string | `^[a-z0-9][a-z0-9-]{0,63}$` exactly, then must be a known Theme (looked up by name in the registry, never joined onto a path); absent on edit: the current one is kept without a check | `422 theme` |
@@ -112,6 +113,22 @@ Every accepted spelling is converted to UTC and stored as Unix milliseconds, so 
 ## Testing the boundary
 
 Each sanitizer is tested through the HTTP seam with hostile inputs: overlong values, control, bidi and zero-width characters, path traversal, wrong formats, `null`, wrong types, unknown fields, repeated parameters, percent-encoding and invalid UTF-8. See the `*_hostile_input.rs` files in `tests/`. Tests also check that rejections never echo the rejected value (`rejections_never_echo_the_rejected_value`) or an unknown field's name (`unknown_fields_are_rejected_without_echoing_their_names`).
+
+## The client side: server answers
+
+For `vota ballot`, the server is the outside. A hostile or compromised server (or anything on the way, with `--insecure`) could put terminal controls into any answer: ANSI escapes that rewrite the screen or the window title, a carriage return that overwrites a line, bidi overrides that reorder it. So the client applies the same pattern to what it receives, with `src/cli/ballot/answer.rs` as its `input/`:
+
+1. **The connection wraps the response.** `cli/ballot/connection.rs` reads nothing of a response: it hands the status, the headers the client uses (`Location`, `Retry-After`, `Content-Type`) and the body over as an `UntrustedValue<Arrival>`, whose fields only `answer.rs` can read.
+2. **Sanitizers are the only way out.** `answer::read` turns an error answer into a `Failure` (exit code and message) and a successful one into a `Body`, still untrusted, which only the views in `answer.rs` read: one Ballot (`ServerBallot`), the list, the answer of `create` (one Ballot or many), and the JSON for `--json`.
+3. **The views are typed, and their text is printable by construction.** Numbers stay numbers; the Ballot Status, Choice Mode, Submission Mode and a result's source are enums; timestamps are parsed; the Ballot's URL is parsed with the `url` crate (only `http` and `https`) and printed, and drawn by `--qr`, in its ASCII form, so a control character in it is percent-encoded. Every other string is a `ServerText`, which leaves only escaped. Readable output, the tally, CSV cells, the QR code and error messages take only these views. What gets printed is one of three types from `cli/escape.rs`, each built only by escaping: `PrintableText` (control, bidi and other invisible characters, newline and tab included, as `\u{…}`), `PrintableLines` (the same, but line feeds and tabs kept: CSV cells, where the formula protection stays as before) and `PrintableJson`.
+4. **`--json` re-serializes the parsed answer**: serde_json escapes ASCII controls in strings, and every other unprintable character (bidi, zero-width, C1 controls, tags) is then written as a `\uXXXX` escape, so it is the same JSON value, safe on a terminal. A non-JSON error body is printed as escaped text.
+5. **Every error message is escaped as a whole**, whatever it quotes: the server's error code, message and field, a `Location` (as a parsed URL if absolute, else as escaped text), a `Retry-After` that isn't a number, a short plain-text body, the Voter References a bulk create found taken, a flag value the client refuses, and transport errors, where a TLS error quotes the names in the server's certificate.
+
+Parsing is tolerant, as the client always was: a field it doesn't know is ignored (a newer server may add some), a missing or `null` field shows as `-` (empty in CSV), and a field of an unexpected type or value (an unknown Ballot Status, a URL that doesn't parse) shows as its text, escaped. Only where the client must act on a value is an unreadable one an unexpected answer (exit 1): the URL for `--qr`, the current Voting Deadline for a `+` date, and a result's source for `tally`.
+
+`vota admin-token list` prints labels from the server's own database, which were checked by `admin-token create` (stored before labels were checked, they may not be). They are not wrapped in `UntrustedValue`, as the store is the server's own and holds no request input, but they are printed through the same types: `PrintableText` in the table, `PrintableJson` with `--json`.
+
+`tests/ballot_cli_hostile_answers.rs` runs every command, in every output mode, against a stand-in server with terminal controls in every field, error message and header, and checks that no raw control or bidi character reaches stdout or stderr.
 
 ## Related
 

@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use chrono::{DateTime, Utc};
 use sqlx::{Connection as _, SqliteConnection, SqlitePool};
 
+use super::write_preselection;
 use super::{
     DuplicateVoterReference, MAX_ATTEMPTS, free_purged_voter_reference,
     is_duplicate_voter_reference,
@@ -228,6 +229,19 @@ async fn write(
             .execute(&mut *conn)
             .await?;
     }
+    let preselection = draft.preselection.as_ref().map(|preselection| {
+        preselection
+            .positions()
+            .iter()
+            .map(|&position| options[position].id.clone())
+            .collect::<Vec<_>>()
+    });
+    let response = match &preselection {
+        Some(option_ids) => {
+            write_preselection(conn, id, option_ids, draft.submission_mode, now).await?
+        }
+        None => None,
+    };
     Ok(Ballot {
         id,
         token,
@@ -243,8 +257,9 @@ async fn write(
         voting_deadline: millis::truncate(draft.voting_deadline)?,
         purge_date: millis::truncate(draft.purge_date)?,
         created_at: millis::truncate(now)?,
-        response: None,
+        response,
         fallback,
+        preselection,
         group: draft.group.as_ref().map(|group| group.as_str().to_owned()),
         voter_reference: voter_reference.map(|reference| reference.as_str().to_owned()),
         theme: draft.theme.as_str().to_owned(),

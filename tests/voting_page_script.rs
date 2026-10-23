@@ -319,7 +319,7 @@ async fn the_voting_page_loads_the_script_with_what_it_needs_in_data_attributes(
 
     let expected = format!(
         r#"<link rel="stylesheet" href="/assets/app/ballot.css">
-<script type="module" src="/assets/app/main.js" id="vota-enhancement" data-api="/api/b/{token}/response" data-page="/b/{token}" data-deadline="2030-01-22T12:00:00Z" data-now="2030-01-15T12:00:00Z" data-open="true" data-revision="0" data-choice-mode="single" data-submission-mode="final" data-needs-confirmation="true" data-allow-no-option="false" data-answered="false"></script>
+<script type="module" src="/assets/app/main.js" id="vota-enhancement" data-api="/api/b/{token}/response" data-page="/b/{token}" data-deadline="2030-01-22T12:00:00Z" data-now="2030-01-15T12:00:00Z" data-open="true" data-revision="0" data-choice-mode="single" data-submission-mode="final" data-needs-confirmation="true" data-allow-no-option="false" data-answered="false" data-preselected="false"></script>
 </head>"#
     );
     assert!(html.contains(&expected), "{expected}\nnot in\n{html}");

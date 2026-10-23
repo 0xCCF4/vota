@@ -26,6 +26,7 @@ async fn submitting_one_option_records_the_response_and_answers_the_ballot() {
         "option_ids": [options[1]],
         "answered_at": "2030-01-15T12:05:00Z",
         "changed_at": "2030-01-15T12:05:00Z",
+        "origin": "voter",
     });
     let body = body_json(response).await;
     assert_eq!(body["status"], "answered", "{body}");

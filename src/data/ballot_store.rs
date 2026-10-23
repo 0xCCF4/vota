@@ -7,7 +7,10 @@
 use chrono::{DateTime, Utc};
 use sqlx::SqliteConnection;
 
-use crate::domain::ballot::{Group, VoterReference};
+use crate::data::millis;
+use crate::domain::ballot::{
+    Group, OptionId, Response, ResponseOrigin, SubmissionMode, VoterReference,
+};
 
 /// `SELECT <the columns of BallotRow> FROM ballots WHERE <not purged at ?1>
 /// AND (<condition>) <rest>`, as a static SQL string: the one way to look up
@@ -88,4 +91,51 @@ async fn free_purged_voter_reference(
     .execute(conn)
     .await?;
     Ok(())
+}
+
+/// Stores `option_ids` as the Preselection of the Ballot with this ID (which
+/// has none stored), and, if a Ballot of this Submission Mode records it
+/// ([`SubmissionMode::records_preselection`]), as its Response of origin
+/// [`ResponseOrigin::Preselection`], answered at `now` (it has no Response
+/// stored either). Returns that Response, if recorded.
+async fn write_preselection(
+    conn: &mut SqliteConnection,
+    ballot_id: i64,
+    option_ids: &[OptionId],
+    submission_mode: SubmissionMode,
+    now: DateTime<Utc>,
+) -> sqlx::Result<Option<Response>> {
+    for option_id in option_ids {
+        sqlx::query("INSERT INTO preselected_options (ballot_id, option_id) VALUES (?, ?)")
+            .bind(ballot_id)
+            .bind(option_id.as_str())
+            .execute(&mut *conn)
+            .await?;
+    }
+    if !submission_mode.records_preselection() {
+        return Ok(None);
+    }
+    let origin = ResponseOrigin::Preselection;
+    sqlx::query(
+        "INSERT INTO responses (ballot_id, answered_at, changed_at, origin) VALUES (?1, ?2, ?2, ?3)",
+    )
+    .bind(ballot_id)
+    .bind(now.timestamp_millis())
+    .bind(origin.as_str())
+    .execute(&mut *conn)
+    .await?;
+    for option_id in option_ids {
+        sqlx::query("INSERT INTO response_options (ballot_id, option_id) VALUES (?, ?)")
+            .bind(ballot_id)
+            .bind(option_id.as_str())
+            .execute(&mut *conn)
+            .await?;
+    }
+    let now = millis::truncate(now)?;
+    Ok(Some(Response {
+        option_ids: option_ids.to_vec(),
+        answered_at: now,
+        changed_at: now,
+        origin,
+    }))
 }

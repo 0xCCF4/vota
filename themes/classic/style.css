@@ -214,7 +214,8 @@ a:hover { text-decoration-thickness: 2px; }
   color: var(--text);
 }
 
-.fallback {
+.fallback,
+.preselection-hint {
   margin: 0 0 var(--space-3);
   color: var(--muted);
   font-size: var(--step--1);

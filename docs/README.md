@@ -1,11 +1,11 @@
 # Vota documentation
 
-Start with the [README](../README.md) for a quickstart. Developers should read [ONBOARDING.md](../ONBOARDING.md). The security policy, threat model and operator hardening checklist are in [SECURITY.md](../SECURITY.md). Domain terms (Ballot, Ballot Token, Voter Reference, Group, Option, Choice Mode, Allow No Option, Submission Mode, Fallback, Voting Deadline, Purge Date, Ballot Status, Theme, Theme Tweak, Admin Token, Response) are defined in [CONTEXT.md](../CONTEXT.md).
+Start with the [README](../README.md) for a quickstart. Developers should read [ONBOARDING.md](../ONBOARDING.md). The security policy, threat model and operator hardening checklist are in [SECURITY.md](../SECURITY.md). Domain terms (Ballot, Ballot Token, Voter Reference, Group, Option, Choice Mode, Allow No Option, Submission Mode, Fallback, Preselection, Voting Deadline, Purge Date, Ballot Status, Theme, Theme Tweak, Admin Token, Response) are defined in [CONTEXT.md](../CONTEXT.md).
 
 ## Concepts
 
 - [Ballot lifecycle and Ballot Status](concepts/ballot-lifecycle.md): states, the derived Ballot Status, what the admin may do when, and the concurrency guarantees.
-- [Voting Deadline, Fallback and Purge Date](concepts/deadlines-fallback-purge.md): extension and reopening, the Purge Date shift, `max_date_horizon`, the purge sweep, the revision guard (`ballot_changed`).
+- [Voting Deadline, Fallback and Purge Date](concepts/deadlines-fallback-purge.md): extension and reopening, the Purge Date shift, `max_date_horizon`, the purge sweep, the Preselection, the revision guard (`ballot_changed`).
 - [Trust boundary and sanitization](concepts/trust-boundary.md): the `untrusted_value` pattern and the rules and limits for every field.
 - [Admin Tokens and ADR 0001](concepts/admin-tokens.md): one port, bearer tokens, the CLI as root of trust, Admin Tokens from files.
 - [Uniform not-found, rate limiting and trusted proxies](concepts/not-found-and-rate-limiting.md).

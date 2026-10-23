@@ -28,6 +28,7 @@ async fn a_new_submission_through_the_api_replaces_the_response() {
         "option_ids": [options[2]],
         "answered_at": "2030-01-15T12:05:00Z",
         "changed_at": "2030-01-15T14:05:00Z",
+        "origin": "voter",
     });
     let body = body_json(response).await;
     assert_eq!(body["status"], "answered", "{body}");
@@ -212,6 +213,7 @@ async fn changing_the_answer_through_the_form_replaces_it() {
             "option_ids": [options[2]],
             "answered_at": "2030-01-15T12:00:00Z",
             "changed_at": "2030-01-15T12:30:00Z",
+            "origin": "voter",
         })
     );
 }

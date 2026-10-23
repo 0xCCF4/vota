@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 use sha2::{Digest as _, Sha256};
 
 use crate::api::rfc3339;
-use crate::domain::ballot::Ballot;
+use crate::domain::ballot::{Ballot, ResponseOrigin};
 
 /// The directory the modules are served under, followed by their version
 /// and their file name: `/assets/app/<version>/<file>`.
@@ -102,7 +102,10 @@ fn hex16(digest: &[u8]) -> String {
 /// - `data-allow-no-option` (`true`/`false`): whether a Response may select
 ///   no Option;
 /// - `data-answered` (`true`/`false`): whether the Ballot has a Response,
-///   so an empty selection on the page tells "no Option" from "no answer".
+///   so an empty selection on the page tells "no Option" from "no answer";
+/// - `data-preselected` (`true`/`false`): whether that Response was
+///   recorded from the Preselection and the voter hasn't saved one yet, so
+///   the page offers to save it as it stands.
 ///
 /// The script itself relies on nothing else in the page but the no-JS form
 /// (a `method="post"` form with `option` inputs and their `<label for>`s),
@@ -129,7 +132,8 @@ pub(super) fn include(
          data-submission-mode=\"{submission_mode}\" \
          data-needs-confirmation=\"{needs_confirmation}\" \
          data-allow-no-option=\"{allow_no_option}\" \
-         data-answered=\"{answered}\"></script>\n",
+         data-answered=\"{answered}\" \
+         data-preselected=\"{preselected}\"></script>\n",
         // The base path without its trailing slash: `` at the root.
         root = attribute(base_path.trim_end_matches('/')),
         stylesheet_version = STYLESHEET_VERSION.as_str(),
@@ -144,6 +148,10 @@ pub(super) fn include(
         needs_confirmation = ballot.needs_confirmation(),
         allow_no_option = ballot.allow_no_option,
         answered = ballot.response.is_some(),
+        preselected = ballot
+            .response
+            .as_ref()
+            .is_some_and(|response| response.origin == ResponseOrigin::Preselection),
     );
     let at = find_ignoring_case(&html, "</head>")
         .or_else(|| find_ignoring_case(&html, "</body>"))

@@ -35,6 +35,9 @@ export function readConfig(tag) {
     // Whether the Ballot has a Response: an empty selection on the page is
     // then the voter's answer of no Option, not "no answer yet".
     answered: data.answered === "true",
+    // Whether that Response is the admin's Preselection, which the voter
+    // hasn't saved (or changed) yet: saving it as it stands makes it theirs.
+    preselected: data.preselected === "true",
   };
 }
 

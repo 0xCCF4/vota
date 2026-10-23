@@ -1,14 +1,17 @@
-//! The HTTP side of `vota ballot`: the server's URL, the Admin Token,
-//! the HTTP(S) client, and a reply turned into JSON or a [`Failure`] with
-//! its exit code. Knows nothing about Ballots.
+//! The HTTP side of `vota ballot`: the server's URL, the Admin Token and
+//! the HTTP(S) client. A response is handed over as it arrived, wrapped as
+//! an [`UntrustedValue`]: this module reads none of it, [`answer`](super::answer)
+//! does. Knows nothing about Ballots.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
+use reqwest::Method;
 use reqwest::header::{self, HeaderValue};
-use reqwest::{Method, StatusCode};
+use untrusted_value::UntrustedValue;
 use url::Url;
 
+use super::answer::Arrival;
 use super::{Exit, Failure, read_input};
 
 /// Where the server is and how to reach it: global flags of `ballot`.
@@ -69,9 +72,6 @@ pub(super) struct Connection {
     base: Url,
     authorization: HeaderValue,
 }
-
-/// A successful reply: its JSON body, `None` for `204 No Content`.
-pub(super) type Reply = Option<serde_json::Value>;
 
 impl ConnectionArgs {
     /// The connection, or a usage error (exit 2) for a missing or refused
@@ -161,8 +161,7 @@ fn base_url(url: Option<&str>, allow_http: bool) -> Result<Url, Failure> {
         .filter(|base| base.has_host())
         .ok_or_else(|| {
             Failure::usage(format!(
-                "--url {}: not an absolute http:// or https:// URL",
-                super::printable(url)
+                "--url {url}: not an absolute http:// or https:// URL"
             ))
         })?;
     match base.scheme() {
@@ -176,8 +175,7 @@ fn base_url(url: Option<&str>, allow_http: bool) -> Result<Url, Failure> {
         }
         _ => {
             return Err(Failure::usage(format!(
-                "--url {}: the scheme must be http or https",
-                super::printable(url)
+                "--url {url}: the scheme must be http or https"
             )));
         }
     }
@@ -200,13 +198,14 @@ fn is_loopback(url: &Url) -> bool {
 
 impl Connection {
     /// Sends one request to `path` (relative to the base URL, with an
-    /// already encoded query, if any) and reads the reply.
+    /// already encoded query, if any) and returns the response unread; a
+    /// [`Failure`] (exit 7) only when no complete response arrived.
     pub(super) async fn send(
         &self,
         method: Method,
         path: &str,
         body: Option<Vec<u8>>,
-    ) -> Result<Reply, Failure> {
+    ) -> Result<UntrustedValue<Arrival>, Failure> {
         let url = self.base.join(path).map_err(|error| {
             Failure::new(Exit::Other, format!("can't build the request URL: {error}"))
         })?;
@@ -224,7 +223,7 @@ impl Connection {
         let status = response.status();
         let headers = response.headers().clone();
         let bytes = response.bytes().await.map_err(network_failure)?;
-        reply(status, &headers, &bytes)
+        Ok(Arrival::wrap(status, &headers, bytes.to_vec()))
     }
 }
 
@@ -241,7 +240,9 @@ fn network_failure(error: reqwest::Error) -> Failure {
 }
 
 /// `what`, the error and its source chain, which names the cause (refused,
-/// TLS, …), never the request's headers.
+/// TLS, …), never the request's headers. It may quote the server (a TLS
+/// error names the certificate's names), so it is escaped like all text
+/// in a [`Failure`].
 fn with_causes(what: &str, error: &reqwest::Error) -> String {
     let mut message = format!("{what}: {error}");
     let mut source = std::error::Error::source(error);
@@ -250,81 +251,4 @@ fn with_causes(what: &str, error: &reqwest::Error) -> String {
         source = cause.source();
     }
     message
-}
-
-/// The reply's JSON body on success; otherwise a [`Failure`] with the exit
-/// code of its status and the error body for `--json`.
-fn reply(status: StatusCode, headers: &header::HeaderMap, body: &[u8]) -> Result<Reply, Failure> {
-    let json: Option<serde_json::Value> = serde_json::from_slice(body).ok();
-    if status.is_success() {
-        if status == StatusCode::NO_CONTENT {
-            return Ok(None);
-        }
-        return match json {
-            Some(json) => Ok(Some(json)),
-            None => Err(Failure::new(
-                Exit::Other,
-                format!("unexpected response: {status} without a JSON body"),
-            )),
-        };
-    }
-    if status.is_redirection() {
-        let location = headers
-            .get(header::LOCATION)
-            .map(|value| super::printable(&String::from_utf8_lossy(value.as_bytes())))
-            .unwrap_or_else(|| "nowhere".into());
-        return Err(Failure::new(
-            Exit::Other,
-            format!("{status}: redirected to {location}; redirects are not followed (check --url)"),
-        ));
-    }
-    let exit = Exit::for_status(status);
-    let mut message = status.as_u16().to_string();
-    match &json {
-        Some(error) if error.get("error").is_some_and(|code| code.is_string()) => {
-            let text = |key: &str| error.get(key).and_then(|value| value.as_str());
-            message += &format!(" {}", super::printable(text("error").unwrap_or_default()));
-            if let Some(detail) = text("message") {
-                message += &format!(": {}", super::printable(detail));
-            }
-            if let Some(field) = text("field").filter(|field| !field.is_empty()) {
-                message += &format!(" (field: {})", super::printable(field));
-            }
-        }
-        _ => {
-            message += &format!(" {}", status.canonical_reason().unwrap_or("unknown status"));
-            // A short plain-text reason (such as the body limit's) is
-            // worth showing; an HTML page, say from a proxy, is not.
-            let plain = headers
-                .get(header::CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok())
-                .is_some_and(|value| value.starts_with("text/plain"));
-            let text = String::from_utf8_lossy(body);
-            let text = text.trim();
-            if plain && !text.is_empty() {
-                let shown: String = text.chars().take(200).collect();
-                message += &format!(": {}", super::printable(&shown));
-            }
-        }
-    }
-    if status == StatusCode::UNAUTHORIZED {
-        message += " (the Admin Token was refused: unknown, revoked or expired)";
-    }
-    if let Some(retry_after) = headers.get(header::RETRY_AFTER) {
-        let value = String::from_utf8_lossy(retry_after.as_bytes());
-        message += &match value.trim().parse::<u64>() {
-            Ok(seconds) => format!(" (retry after {seconds} seconds)"),
-            Err(_) => format!(" (Retry-After: {})", super::printable(&value)),
-        };
-    }
-    let body = match json {
-        Some(json) => Some(super::json_text(&json)),
-        None if body.is_empty() => None,
-        None => Some(super::printable(&String::from_utf8_lossy(body))),
-    };
-    Err(Failure {
-        exit,
-        message,
-        body,
-    })
 }

@@ -8,7 +8,7 @@ use crate::data::db;
 use crate::domain::admin_token::{self, AdminTokenLabel, AdminTokenSecret};
 use untrusted_value::{SanitizeValue as _, UntrustedValue};
 
-use super::escape::{escape_json, printable};
+use super::escape::{PrintableJson, PrintableText};
 
 #[derive(Subcommand)]
 pub(super) enum AdminTokenCommand {
@@ -142,7 +142,7 @@ impl AdminTokenCommand {
                 if json {
                     println!(
                         "{}",
-                        escape_json(&render_json(&tokens, clock.now()).to_string())
+                        PrintableJson::compact(&render_json(&tokens, clock.now()))
                     );
                 } else {
                     print!("{}", render_table(&tokens, clock.now()));
@@ -196,7 +196,9 @@ fn render_json(tokens: &[AdminTokenInfo], now: DateTime<Utc>) -> serde_json::Val
 }
 
 /// Aligned columns ID, CREATED, EXPIRES, EXPIRED, LAST-USED, LABEL. The
-/// label comes last because it is free text and may contain spaces.
+/// label comes last because it is free text and may contain spaces. It is
+/// printed as a [`PrintableText`]: a label stored before labels were
+/// checked may hold characters `create` now refuses.
 fn render_table(tokens: &[AdminTokenInfo], now: DateTime<Utc>) -> String {
     let timestamp = |t: DateTime<Utc>| t.to_rfc3339_opts(SecondsFormat::Secs, true);
     let rows: Vec<[String; 6]> = tokens
@@ -213,7 +215,9 @@ fn render_table(tokens: &[AdminTokenInfo], now: DateTime<Utc>) -> String {
                 }
                 .into(),
                 token.last_used_at.map_or_else(|| "never".into(), timestamp),
-                token.label.as_deref().map(printable).unwrap_or_default(),
+                (token.label.as_deref())
+                    .map(|label| PrintableText::new(label).to_string())
+                    .unwrap_or_default(),
             ]
         })
         .collect();

@@ -108,6 +108,7 @@ Creates one Ballot and answers `201 Created` with its [admin view](#the-admin-vi
 | `voting_deadline` | [timestamp](#conventions) string | yes      |                                                 | Must lie in the future and no later than now + [`max_date_horizon`](configuration.md#max_date_horizon) (default 1 year). |
 | `purge_date`      | [timestamp](#conventions) string | no       | `voting_deadline` + [`default_purge_gap`](configuration.md#default_purge_gap) (4 weeks) | If given: in the future, no later than now + `max_date_horizon`, and not before `voting_deadline` (equal is allowed). The computed default is not capped by the horizon. |
 | `fallback`        | array of strings         | no       | no Fallback                                     | **Option labels**, not IDs: the Options get their IDs only now. Each label is normalised like an Option label and must match one of this Ballot's Options. No duplicates. Must obey the Choice Mode: exactly one label for single choice, one or more for multiple choice. `[]` is rejected. |
+| `preselection`    | array of strings         | no       | no Preselection                                 | **Preselection**: Options ticked on the voting page before the voter does. **Option labels**, with the same rules as `fallback` (never empty, even with Allow No Option). Independent of the Fallback: both may be set and may differ. On a **Final** Ballot nothing is recorded: the voter still submits and confirms. On an **Editable** Ballot it is recorded as the Response at once (`response.origin` `"preselection"`), so the Ballot is Answered from the start and the Fallback never applies; see [Preselection](#preselection). CLI: [`--preselect`](cli.md#field-flags). |
 | `group`           | string                   | no       | none                                            | Single-line text, 1–200 characters. |
 | `voter_reference` | string, or array of strings | no    | none                                            | Single-line text, 1–200 characters. Unique within its Group: a second Ballot with the same Group and Voter Reference is a `409`. Without a Group it is not constrained. An array creates [many Ballots](#many-ballots-at-once), one per entry. |
 | `count`           | integer                  | no       | none                                            | Creates [this many Ballots](#many-ballots-at-once) with numbered Voter References, 1 to 1000. Needs a `group`; not together with `voter_reference`. |
@@ -142,6 +143,7 @@ curl -s -X POST http://localhost:8080/admin/ballots \
     { "id": "9AP_l_daq5c", "label": "Pizza" },
     { "id": "c8lVx4rmBwQ", "label": "Sushi" }
   ],
+  "preselection": null,
   "purge_date": "2026-12-29T11:00:00Z",
   "response": null,
   "result": null,
@@ -210,6 +212,7 @@ curl -s -X POST http://localhost:8080/admin/ballots \
     { "id": "otO0JCJbJ88", "label": "Friday 15 January" },
     { "id": "kDH9L13ZxRg", "label": "Saturday 16 January" }
   ],
+  "preselection": null,
   "purge_date": "2027-01-31T00:00:00Z",
   "response": null,
   "result": null,
@@ -297,14 +300,24 @@ The body holds any subset of the creation fields. Fields you leave out keep thei
 
 ### What may be edited when
 
-- **Content edit**: the body names any field other than `group` and `voter_reference`. This is allowed only while the Ballot is **Unanswered**:
-  - once it has a Response (Answered): `409 already_answered`;
+- **Content edit**: the body names any field other than `group` and `voter_reference`. This is allowed only while the Ballot is **Unanswered**, or Answered only by its [Preselection](#preselection) while voting is open:
+  - once it has a Response of the voter (Answered): `409 already_answered`;
+  - once its Voting Deadline has passed with the Preselection as its Response: `409 already_answered` too ([extend](#post-adminballotsidextend-extend-the-voting-deadline) the deadline first);
   - once its Voting Deadline has passed without a Response and its Fallback has applied (Auto-fallback): `409 fallback_applied`. [Extend](#post-adminballotsidextend-extend-the-voting-deadline) the deadline first; that makes the Ballot Unanswered again, and content edits are allowed again.
 
   Either way nothing changes. The check is made before the values are checked, so an edit of such a Ballot with an invalid value (an empty title, say) still gets the `409`. A body that doesn't have the right shape is refused first, with `422`: bad JSON, an unknown field, a wrong JSON type, or `null` where it isn't allowed. The check is made again in the same write as the edit, at the request's time, so an edit arriving exactly at the deadline gets `409 fallback_applied` too. A Ballot whose deadline passed **without** a Fallback is still Unanswered and stays editable; a new `voting_deadline` reopens it, and a new `fallback` applies at once: the Ballot becomes Auto-fallback, with that Fallback as its result, and further content edits get `409 fallback_applied`.
 - **Bookkeeping edit**: the body names only `group` and/or `voter_reference`, or nothing at all (`{}` answers `200` with the Ballot unchanged). This is allowed at any time, also on an Answered or Auto-fallback Ballot, because the voter never sees these fields. It does not count as a change of the Ballot for a Response being submitted at the same moment.
 
 Whether an edit is a content edit depends on which fields are present, not on whether their values change. `{"title": "<the same title>"}` is still a content edit.
+
+### Preselection
+
+A **Preselection** is a set of the Ballot's Options that the voting page shows ticked before the voter does. What it means depends on the Submission Mode:
+
+- **Final**: only the ticks. Nothing is recorded; the voter still submits and confirms, as without a Preselection. Until then the Ballot is Unanswered, and the Fallback (if any) applies at the deadline as usual.
+- **Editable**: the Preselection is **saved as the answer already**. Creating the Ballot records it as the Response, with `response.origin` `"preselection"` (and `result.source` `"preselection"`): the Ballot is Answered from the start, the Fallback never applies, and the voter can change the answer until the deadline. Once the voter saves anything, **even the very same Options**, the Response is the voter's (`origin` `"voter"`, `result.source` `"response"`; `answered_at` becomes the time of that save), and the usual rules apply.
+
+While voting is open and the only Response is the Preselection's, the voter hasn't acted, so **content edits stay allowed**: the Ballot is edited as if Unanswered, and the edit records the resulting Preselection anew as the Response (answered at the time of the edit), or none if the edit removes the Preselection or makes the Ballot Final. Making a Final Ballot with a Preselection Editable records it. Once the voter saves, content edits get `409 already_answered`. Once the deadline has passed with the Preselection as the Response, it is the recorded result, so content edits get `409 already_answered` until the deadline is [extended](#post-adminballotsidextend-extend-the-voting-deadline), as on an Auto-fallback Ballot.
 
 ### Field semantics on edit
 
@@ -316,6 +329,7 @@ Whether an edit is a content edit depends on which fields are present, not on wh
 | `description`, `group`, `voter_reference`, `accent_color` | kept | removes the value             | as on creation |
 | `logo`                                          | kept (not re-checked) | removes the logo       | must exist now |
 | `fallback`                                      | kept: re-resolved by label against the resulting Options and re-checked against the resulting Choice Mode | removes the Fallback | labels of the resulting Options |
+| `preselection`                                  | kept, like `fallback` (rejected with a `422` naming `preselection` when one of its Options is gone) | removes the Preselection | labels of the resulting Options |
 | `options`                                       | kept, with their IDs | `422`                  | **replaces all Options**; every Option gets a new ID |
 | `voting_deadline`                               | kept          | `422`                          | in the future, within the horizon. It may be earlier than the current one (the Ballot is Unanswered, as for every content edit). |
 | `purge_date`                                    | kept, or shifted when the new `voting_deadline` passes it (see below) | `422` | in the future, within the horizon, not before the resulting Voting Deadline |
@@ -492,11 +506,13 @@ curl -s 'http://localhost:8080/admin/ballots?group=offsite-2027&status=answered'
         { "id": "otO0JCJbJ88", "label": "Friday 15 January" },
         { "id": "kDH9L13ZxRg", "label": "Saturday 16 January" }
       ],
+      "preselection": null,
       "purge_date": "2027-01-31T00:00:00Z",
       "response": {
         "answered_at": "2026-10-17T10:51:05.966Z",
         "changed_at": "2026-10-17T10:51:05.966Z",
-        "option_ids": ["asWoSUcc7Ts"]
+        "option_ids": ["asWoSUcc7Ts"],
+        "origin": "voter"
       },
       "result": {
         "option_ids": ["asWoSUcc7Ts"],
@@ -542,9 +558,10 @@ Every successful Ballot response (create, fetch, edit, extend, and each list ent
 | `accent_color`    | `#rrggbb` or `null`       | Lowercase. |
 | `logo`            | string or `null`          | The logo name as stored (it may have been removed from the logo folder since; the page then shows none). |
 | `fallback`        | array of `{id, label}` or `null` | The Fallback's Options in Option order. |
+| `preselection`    | array of `{id, label}` or `null` | The [Preselection](#preselection)'s Options in Option order. |
 | `status`          | `"unanswered"` / `"answered"` / `"auto_fallback"` | Derived at request time; see [Ballot lifecycle](../concepts/ballot-lifecycle.md). |
-| `result`          | object or `null`          | `{source, option_ids, options}`: `source` is `"response"` or `"fallback"`, and `options` holds `{id, label}` of `option_ids`. `null` while there is no Response and the Fallback doesn't apply (yet). Empty `option_ids` and `options` only for a Response of no Option (Allow No Option): that is an answer, unlike `null`. |
-| `response`        | object or `null`          | `{option_ids, answered_at, changed_at}`: `answered_at` is when the first Response came, `changed_at` when the latest did (equal on Final Ballots). `option_ids` is `[]` for a Response of no Option; `null` means no Response. |
+| `result`          | object or `null`          | `{source, option_ids, options}`: `source` is `"response"` (the voter's Response), `"preselection"` (the Preselection, recorded as the Response of an Editable Ballot the voter hasn't saved) or `"fallback"`, and `options` holds `{id, label}` of `option_ids`. `null` while there is no Response and the Fallback doesn't apply (yet). Empty `option_ids` and `options` only for a Response of no Option (Allow No Option): that is an answer, unlike `null`. |
+| `response`        | object or `null`          | `{option_ids, answered_at, changed_at, origin}`: `answered_at` is when the first Response came, `changed_at` when the latest did (equal on Final Ballots). `option_ids` is `[]` for a Response of no Option; `null` means no Response. `origin` is `"voter"`, or `"preselection"` for the [Preselection](#preselection) recorded on an Editable Ballot (then `answered_at` is when it was recorded, by the creation or the latest edit). |
 
 ## Errors
 
@@ -555,7 +572,7 @@ Every successful Ballot response (create, fetch, edit, extend, and each list ent
 | `404` | `{"error":"not_found"}` | No live Ballot with this ID: unknown, deleted, purged, malformed (`007`, `-1`, `abc`) or percent-encoded (`%31`). |
 | `404` | empty | Any other path under `/admin` (with a valid Admin Token), e.g. `/admin/nothing` or `/admin/ballots/`. |
 | `405` | empty, with `Allow` header | Wrong method on a known path, e.g. `PUT /admin/ballots/1`. |
-| `409` | `{"error":"already_answered","message":"this Ballot has a Response; it can no longer be edited"}` | Content edit of a Ballot that has a Response. (The [voter API](voter-api.md) uses the same code with its own message, `this Ballot already has a Response, which can't be changed`.) |
+| `409` | `{"error":"already_answered","message":"this Ballot has a Response; it can no longer be edited"}` | Content edit of a Ballot that has a Response of the voter, or that closed with its Preselection as the Response. (The [voter API](voter-api.md) uses the same code with its own message, `this Ballot already has a Response, which can't be changed`.) |
 | `409` | `{"error":"fallback_applied","message":"the Fallback of this Ballot has applied; extend the Voting Deadline to edit it again"}` | Content edit of an Auto-fallback Ballot (deadline passed without a Response, Fallback applied). |
 | `409` | `{"error":"duplicate_voter_reference","message":"another Ballot in this Group already has this Voter Reference"}` | Create or edit would give two live Ballots in one Group the same Voter Reference. A [bulk create](#many-ballots-at-once) adds `"voter_references"`, the list of the request's Voter References that are taken. |
 | `409` | `{"error":"numbering_exhausted","message":"the Group's numeric Voter References are too large to number on"}` | A create with `count` whose numbers would pass 2⁶⁴−1 ([numbering](#many-ballots-at-once)). |
@@ -604,6 +621,9 @@ Valid JSON of the wrong shape (a wrong type, an unknown or missing field, `[]` i
 | `not an Option of this Ballot` / `duplicate Option` | `fallback[i]` |
 | `select an Option` / `single choice: select exactly one Option` | `fallback` |
 | `the Fallback's Options are no longer all Options of this Ballot; give the Fallback again` | `fallback` (edit) |
+| `not an Option of this Ballot` / `duplicate Option` | `preselection[i]` |
+| `select an Option` / `single choice: select exactly one Option` | `preselection` |
+| `the Preselection's Options are no longer all Options of this Ballot; give the Preselection again` | `preselection` (edit) |
 | `not an RFC 3339 timestamp, or a local date-time in the server's default time zone (YYYY-MM-DDTHH:MM[:SS])` | `voting_deadline`, `purge_date` |
 | `does not exist in the server's default time zone (skipped by a clock change); give a UTC offset` | `voting_deadline`, `purge_date` (a local date-time) |
 | `is ambiguous in the server's default time zone (repeated by a clock change); give a UTC offset` | `voting_deadline`, `purge_date` (a local date-time) |

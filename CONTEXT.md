@@ -37,7 +37,7 @@ The moment from which the whole Ballot, including its Response and Voter Referen
 _Avoid_: Expiry, data expiry, retention date
 
 **Response**:
-The answers a voter has submitted on a Ballot. On a Ballot that has Allow No Option on, a Response may select no Option at all; it is still a Response (the Ballot is Answered). "No Response" always means the voter has not submitted one.
+The answers a voter has submitted on a Ballot. On a Ballot that has Allow No Option on, a Response may select no Option at all; it is still a Response (the Ballot is Answered). "No Response" always means there is none, neither the voter's nor a Preselection's. A Response has an origin: the *voter*'s, or the *Preselection*'s (on an Editable Ballot, recorded in the voter's place until they save one; saving even the same Options makes it the voter's).
 _Avoid_: Vote, submission, answer set, empty response (it reads like "no Response"; say "a Response of no Option")
 
 **Option**:
@@ -60,8 +60,12 @@ _Avoid_: Edit mode, single submit
 An optional set of Options, chosen by the admin, that is recorded as the Ballot's result if the voter has not responded by the Voting Deadline. It obeys the Ballot's Choice Mode and may only contain the Ballot's own Options.
 _Avoid_: Fallback option, default answer, default option
 
+**Preselection**:
+An optional set of Options, chosen by the admin, that the voting page shows ticked before the voter does. It obeys the Ballot's Choice Mode like a Fallback (never empty, even with Allow No Option) and is independent of it: both may be set and may differ. On a Final Ballot it only ticks the Options; the voter still submits and confirms. On an Editable Ballot it is recorded as the Response from the start, so the Ballot is Answered and the Fallback never applies; while voting is open and the voter hasn't saved, the admin may still edit the Ballot, which records the resulting Preselection anew.
+_Avoid_: Default answer, default option, pre-fill, preset
+
 **Ballot Status**:
-Where a Ballot stands: **Unanswered** (no Response yet, or the deadline passed without one and there is no Fallback), **Answered** (the voter submitted a Response), or **Auto-fallback** (the deadline passed without a Response and the Fallback was applied).
+Where a Ballot stands: **Unanswered** (no Response yet, or the deadline passed without one and there is no Fallback), **Answered** (there is a Response: the voter's, or on an Editable Ballot the Preselection's), or **Auto-fallback** (the deadline passed without a Response and the Fallback was applied).
 _Avoid_: State, closed, expired
 
 **Admin Token**:

@@ -7,8 +7,9 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 
+use super::answer::{ChoiceMode, ServerBallot, ServerOption, ServerText, Shown, Source};
 use super::exit::Exit;
-use super::{Failure, csv, printable, printable_lines};
+use super::{Failure, PrintableLines, PrintableText, csv};
 
 /// What a list of Ballots adds up to.
 pub(super) struct Tally {
@@ -17,6 +18,9 @@ pub(super) struct Tally {
     ballots: u64,
     /// Ballots whose result is the voter's Response.
     answered: u64,
+    /// Ballots whose result is the Preselection, recorded as the Response
+    /// of an Editable Ballot the voter hasn't saved.
+    preselected: u64,
     /// Ballots whose result is the Fallback.
     fallback: u64,
     /// Ballots without a result yet.
@@ -33,14 +37,15 @@ pub(super) struct Tally {
 /// Option.
 #[derive(Default)]
 struct Row {
-    label: Option<String>,
+    label: Option<ServerText>,
     answered: u64,
+    preselected: u64,
     fallback: u64,
 }
 
 impl Row {
     /// A row of this label with no counts yet.
-    fn of(label: String) -> Self {
+    fn of(label: ServerText) -> Self {
         Self {
             label: Some(label),
             ..Self::default()
@@ -48,73 +53,71 @@ impl Row {
     }
 
     fn total(&self) -> u64 {
-        self.answered + self.fallback
+        self.answered + self.preselected + self.fallback
     }
 }
 
 impl Tally {
-    /// Sums up the API's `{"ballots": [...]}`. Every Option of every
-    /// Ballot gets a row, also one nobody chose. A result's `source` other
-    /// than `response` or `fallback` is an unexpected answer.
-    pub(super) fn of(list: &Value, group: Option<String>) -> Result<Self, Failure> {
+    /// Sums up the Ballots of `GET /admin/ballots`. Every Option of every
+    /// Ballot gets a row, also one nobody chose (an Option without a label
+    /// counts as the empty label). A result's `source` other than
+    /// `response`, `preselection` or `fallback` is an unexpected answer.
+    pub(super) fn of(list: &[ServerBallot], group: Option<String>) -> Result<Self, Failure> {
         let mut tally = Self {
             group,
             ballots: 0,
             answered: 0,
+            preselected: 0,
             fallback: 0,
             open: 0,
             rows: Vec::new(),
             multiple: false,
         };
-        let mut labels: BTreeMap<String, Row> = BTreeMap::new();
+        let mut labels: BTreeMap<ServerText, Row> = BTreeMap::new();
         let mut none = Row::default();
         let mut allows_none = false;
-        let label = |option: &Value| option["label"].as_str().unwrap_or_default().to_owned();
-        for ballot in list["ballots"].as_array().into_iter().flatten() {
+        let label = |option: &ServerOption| option.label.known().cloned().unwrap_or_default();
+        for ballot in list {
             tally.ballots += 1;
-            tally.multiple |= ballot["choice_mode"] == "multiple";
-            allows_none |= ballot["allow_no_option"] == true;
-            for option in ballot["options"].as_array().into_iter().flatten() {
+            tally.multiple |= ballot.choice_mode == Shown::Known(ChoiceMode::Multiple);
+            allows_none |= ballot.allow_no_option == Shown::Known(true);
+            for option in &ballot.options {
                 let label = label(option);
                 labels
                     .entry(label.clone())
                     .or_insert_with(|| Row::of(label));
             }
-            let result = &ballot["result"];
-            if result.is_null() {
+            let Some(result) = &ballot.result else {
                 tally.open += 1;
                 continue;
-            }
-            let from_response = match result["source"].as_str() {
-                Some("response") => true,
-                Some("fallback") => false,
+            };
+            let source = match result.source {
+                Shown::Known(source) => source,
                 _ => {
                     return Err(Failure::new(
                         Exit::Other,
                         format!(
                             "unexpected response: Ballot {} with a result of unknown source",
-                            printable(&ballot["id"].to_string())
+                            ballot.id.show()
                         ),
                     ));
                 }
             };
-            let count = |row: &mut Row| {
-                if from_response {
-                    row.answered += 1;
-                } else {
-                    row.fallback += 1;
-                }
+            let count = |row: &mut Row| match source {
+                Source::Response => row.answered += 1,
+                Source::Preselection => row.preselected += 1,
+                Source::Fallback => row.fallback += 1,
             };
-            if from_response {
-                tally.answered += 1;
-            } else {
-                tally.fallback += 1;
+            match source {
+                Source::Response => tally.answered += 1,
+                Source::Preselection => tally.preselected += 1,
+                Source::Fallback => tally.fallback += 1,
             }
-            let chosen = result["options"].as_array().cloned().unwrap_or_default();
+            let chosen = result.options.as_deref().unwrap_or_default();
             if chosen.is_empty() {
                 count(&mut none);
             }
-            for option in &chosen {
+            for option in chosen {
                 let label = label(option);
                 count(
                     labels
@@ -137,26 +140,30 @@ impl Tally {
     /// choice a note below it.
     pub(super) fn text(&self) -> String {
         let group = match &self.group {
-            Some(group) => printable(group),
-            None => "(all live Ballots)".into(),
+            Some(group) => PrintableText::new(group),
+            None => PrintableText::new("(all live Ballots)"),
         };
         let mut out = format!(
-            "Group: {group}  Ballots: {}  Answered: {}  By Fallback: {}  Open: {}\n\n",
-            self.ballots, self.answered, self.fallback, self.open
+            "Group: {group}  Ballots: {}  Answered: {}  Preselected: {}  By Fallback: {}  \
+             Open: {}\n\n",
+            self.ballots, self.answered, self.preselected, self.fallback, self.open
         );
-        let rows: Vec<[String; 4]> = self
+        let rows: Vec<[String; 5]> = self
             .rows
             .iter()
             .map(|row| {
                 [
-                    row.label.as_deref().map_or("(none)".into(), printable),
+                    row.label
+                        .as_ref()
+                        .map_or_else(|| "(none)".into(), |label| label.text().to_string()),
                     row.answered.to_string(),
+                    row.preselected.to_string(),
                     row.fallback.to_string(),
                     row.total().to_string(),
                 ]
             })
             .collect();
-        let header = ["OPTION", "ANSWERED", "FALLBACK", "TOTAL"].map(String::from);
+        let header = ["OPTION", "ANSWERED", "PRESELECTED", "FALLBACK", "TOTAL"].map(String::from);
         let mut widths = header.each_ref().map(|cell| cell.chars().count());
         for row in &rows {
             for (width, cell) in widths.iter_mut().zip(row) {
@@ -179,9 +186,10 @@ impl Tally {
         out
     }
 
-    /// The JSON output: `{group, ballots, answered, fallback, open,
-    /// options: [{option, answered, fallback, total}]}`, `option` `null`
-    /// for a Response of no Option.
+    /// The JSON output: `{group, ballots, answered, preselected, fallback,
+    /// open, options: [{option, answered, preselected, fallback, total}]}`,
+    /// `option` `null` for a Response of no Option. Printed only as a
+    /// `PrintableJson`.
     pub(super) fn json(&self) -> Value {
         let options: Vec<Value> = self
             .rows
@@ -190,6 +198,7 @@ impl Tally {
                 json!({
                     "option": row.label,
                     "answered": row.answered,
+                    "preselected": row.preselected,
                     "fallback": row.fallback,
                     "total": row.total(),
                 })
@@ -199,26 +208,29 @@ impl Tally {
             "group": self.group,
             "ballots": self.ballots,
             "answered": self.answered,
+            "preselected": self.preselected,
             "fallback": self.fallback,
             "open": self.open,
             "options": options,
         })
     }
 
-    /// The CSV output: `option,answered,fallback,total`, the `option` cell
-    /// empty for a Response of no Option (no Option has an empty label).
+    /// The CSV output: `option,answered,preselected,fallback,total`, the
+    /// `option` cell empty for a Response of no Option (no Option has an
+    /// empty label).
     pub(super) fn csv(&self) -> String {
         csv::document(
-            &["option", "answered", "fallback", "total"],
+            &["option", "answered", "preselected", "fallback", "total"],
             self.rows.iter().map(|row| {
                 [
                     row.label
-                        .as_deref()
-                        .map(printable_lines)
+                        .as_ref()
+                        .map(ServerText::lines)
                         .unwrap_or_default(),
-                    row.answered.to_string(),
-                    row.fallback.to_string(),
-                    row.total().to_string(),
+                    PrintableLines::new(&row.answered.to_string()),
+                    PrintableLines::new(&row.preselected.to_string()),
+                    PrintableLines::new(&row.fallback.to_string()),
+                    PrintableLines::new(&row.total().to_string()),
                 ]
             }),
         )
