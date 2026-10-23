@@ -1,7 +1,7 @@
-//! The command line: `serve` (default) and `admin-token …` (cargo feature
-//! `server`), the admin API client `ballot …` (cargo feature `client`), and
-//! `completions` and `man` (every build). A build without `server` has no
-//! default command: `vota` alone shows the help.
+//! The command line: `serve` and `admin-token …` (cargo feature `server`),
+//! the admin API client `ballot …` (cargo feature `client`), and
+//! `completions` and `man` (every build). There is no default command:
+//! `vota` alone shows the help.
 
 #[cfg(feature = "server")]
 mod admin_token;
@@ -31,9 +31,9 @@ use crate::config::Config;
     name = "vota",
     version,
     about = "Personal Ballots with an admin API and a voting UI",
-    // Without the server there is no default command.
-    arg_required_else_help = !cfg!(feature = "server"),
-    subcommand_required = !cfg!(feature = "server")
+    // No default command: `vota` alone shows the help.
+    arg_required_else_help = true,
+    subcommand_required = true
 )]
 pub struct Cli {
     /// TOML config file; `VOTA_*` environment variables override its
@@ -49,12 +49,12 @@ pub struct Cli {
     config: Option<PathBuf>,
 
     #[command(subcommand)]
-    command: Option<Command>,
+    command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the web server (the default when no subcommand is given).
+    /// Run the web server.
     #[cfg(feature = "server")]
     Serve,
     /// Manage Admin Tokens in the configured database (the server need not
@@ -88,29 +88,26 @@ impl Cli {
         // Admin Token) can leak into a log.
         match self.command {
             #[cfg(feature = "client")]
-            Some(Command::Ballot(ballot)) => Ok(ballot.run().await),
-            Some(Command::Completions(completions)) => {
+            Command::Ballot(ballot) => Ok(ballot.run().await),
+            Command::Completions(completions) => {
                 completions.run()?;
                 Ok(ExitCode::SUCCESS)
             }
-            Some(Command::Man { out_dir }) => {
+            Command::Man { out_dir } => {
                 man::write_pages(&out_dir)?;
                 Ok(ExitCode::SUCCESS)
             }
             // Needs neither the configuration nor the database.
             #[cfg(feature = "server")]
-            Some(Command::AdminToken(admin_token::AdminTokenCommand::Generate)) => {
+            Command::AdminToken(admin_token::AdminTokenCommand::Generate) => {
                 admin_token::generate();
                 Ok(ExitCode::SUCCESS)
             }
             #[cfg(feature = "server")]
             command => {
-                run_server_command(self.config.as_deref(), command.unwrap_or(Command::Serve))
-                    .await?;
+                run_server_command(self.config.as_deref(), command).await?;
                 Ok(ExitCode::SUCCESS)
             }
-            #[cfg(not(feature = "server"))]
-            None => unreachable!("without the server, clap requires a subcommand"),
         }
     }
 }

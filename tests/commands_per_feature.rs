@@ -68,12 +68,11 @@ fn server_commands_are_unknown_without_the_server_feature() {
     }
 }
 
-#[cfg(not(feature = "server"))]
 #[test]
-fn without_the_server_feature_no_command_shows_the_help() {
+fn no_command_shows_the_help_in_every_build() {
     let output = vota(&[]);
 
-    // Not `serve`, which this build doesn't have: clap's usage error.
+    // There is no default command, not even `serve`: clap's usage error.
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("Usage: vota"), "{stderr}");

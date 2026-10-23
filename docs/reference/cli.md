@@ -3,7 +3,7 @@
 `vota` is a single binary. It runs the web server, manages Admin Tokens, and is a client for the admin API of a running server.
 
 ```text
-vota [--config <FILE>] [serve]
+vota [--config <FILE>] serve
 vota [--config <FILE>] admin-token create [--label <LABEL>] [--expires-in <DURATION> | --expires-at <RFC3339>]
 vota [--config <FILE>] admin-token list [--json]
 vota [--config <FILE>] admin-token revoke (<ID> | --label <LABEL>)
@@ -16,7 +16,7 @@ vota --help | --version
 
 ## Builds and cargo features
 
-Which commands a `vota` binary has depends on the cargo features it was built with. Both are on by default. A command whose feature is off is not in `--help`, and calling it is a usage error (`error: unrecognized subcommand`, exit 2).
+Which commands a `vota` binary has depends on the cargo features it was built with. Both are on by default. A command whose feature is off is not in `--help`, and calling it is a usage error (`error: unrecognized subcommand`, exit 2). There is no default command in any build: `vota` alone prints the help (exit 2), and the server starts only with `vota serve`.
 
 | Feature  | Commands | What it brings in |
 | -------- | -------- | ----------------- |
@@ -34,7 +34,7 @@ Which commands a `vota` binary has depends on the cargo features it was built wi
 
 `admin-token` belongs to `server`: it works directly on the server's database (it needs the configuration, SQLite and the database migrations), so it runs on the server's host anyway. A client-only build manages Ballots through the admin API with a token created there. [`admin-token generate`](#admin-token-generate) needs no database, but stays with the other `admin-token` commands in `server`; where only a client build is at hand, its [shell one-liner](#admin-token-generate) makes the same token.
 
-Without `server` there is no default command: `vota` alone prints the help (exit 2) instead of starting a server. The flake has the full build as `packages.default` (and `vota`) and the client-only build as `packages.vota-client`; `cargo install vota --no-default-features --features client` installs the client from crates.io.
+The flake has the full build as `packages.default` (and `vota`) and the client-only build as `packages.vota-client`; `cargo install vota --no-default-features --features client` installs the client from crates.io.
 
 ## Global options
 
@@ -70,7 +70,7 @@ The database holds every live Ballot Token in plaintext.
 
 ## `serve`
 
-Runs the web server. This is the default when no subcommand is given.
+Runs the web server. It must be named: `vota` without a command only prints the help.
 
 ```sh
 vota --config vota.toml serve
