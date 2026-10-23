@@ -8,3 +8,7 @@ The admin API is served under `/admin/...` on the same host and port as the vote
 - Admin routes must sit in their own router behind the token check, so a routing mistake can't expose them without authentication.
 - There is no way to create Admin Tokens over HTTP; whoever can run the CLI against the database is the root of trust.
 - Moving admin to a separate port later is still possible but changes every admin client's URL.
+
+## Later change
+
+Admin Tokens may also be provisioned in files that the server reads at startup ([`admin_token_files`](../reference/configuration.md#admin_token_files)), kept in memory as hashes and revoked by removing the file and restarting. Tokens are still never created over HTTP; whoever can set the server's configuration and its token files is a root of trust too. See [Admin Tokens from files](../concepts/admin-tokens.md#admin-tokens-from-files).

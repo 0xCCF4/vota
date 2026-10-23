@@ -63,6 +63,11 @@ pkgs.testers.runNixOSTest {
       pkgs.sqlite
       pkgs.python3
     ];
+
+    # The shells whose modules link the package's completions into the
+    # system profile (bash's is on by default).
+    programs.zsh.enable = true;
+    programs.fish.enable = true;
   };
 
   testScript = ''
@@ -146,8 +151,38 @@ pkgs.testers.runNixOSTest {
         # Without a token: a usage error, before any request.
         status = machine.execute("VOTA_URL=http://localhost:8080/polls vota ballot list")[0]
         assert status == 2, status
-        # The shell completions are installed with the package.
-        machine.succeed("grep -q 'vota' /run/current-system/sw/share/bash-completion/completions/vota.bash")
+
+    with subtest("man pages and shell completions are installed for vota and the wrapper"):
+        for page in ["vota", "vota-ballot-create", "vota-admin-token", "vota-admin-token-create", "vota-man"]:
+            path = machine.succeed(f"man -w {page}").strip()
+            # man-db names the file behind the system profile's link.
+            assert path.endswith(f"/share/man/man1/{page}.1.gz"), (page, path)
+        page = machine.succeed("man vota-ballot 2>&1 | cat")
+        assert "EXIT STATUS" in page and "VOTA_ADMIN_TOKEN" in page, page
+        sw = "/run/current-system/sw/share"
+        for command in ["vota", "vota-admin-token"]:
+            machine.succeed(
+                f"test -s {sw}/bash-completion/completions/{command}.bash",
+                f"test -s {sw}/zsh/site-functions/_{command}",
+                f"test -s {sw}/fish/vendor_completions.d/{command}.fish",
+            )
+        # bash: what `vota bal<TAB>` and `vota-admin-token cr<TAB>` offer.
+        offered = machine.succeed(
+            f"bash -c 'source {sw}/bash-completion/completions/vota.bash; "
+            "COMP_WORDS=(vota bal); COMP_CWORD=1; _vota vota bal vota; echo \"''${COMPREPLY[@]}\"'"
+        ).split()
+        assert offered == ["ballot"], offered
+        offered = machine.succeed(
+            f"bash -c 'source {sw}/bash-completion/completions/vota-admin-token.bash; "
+            "COMP_WORDS=(vota-admin-token cr); COMP_CWORD=1; "
+            "_vota__admin__token vota-admin-token cr vota-admin-token; echo \"''${COMPREPLY[@]}\"'"
+        ).split()
+        assert offered == ["create"], offered
+        # fish finds the completions on its own.
+        offered = machine.succeed("fish -c 'complete -C\"vota bal\"'")
+        assert offered.startswith("ballot"), offered
+        # zsh: the completion functions are on zsh's fpath (set in /etc/zshenv).
+        machine.succeed("zsh -c 'autoload -Uz +X _vota && autoload -Uz +X _vota-admin-token'")
 
     with subtest("default_time_zone follows time.timeZone: a local deadline is read in Berlin time"):
         # A week ahead, in the system's (and so the service's) zone, without offset.

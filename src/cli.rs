@@ -1,24 +1,25 @@
 //! The command line: `serve` (default) and `admin-token …` (cargo feature
-//! `server`), the admin API client `ballot …` (cargo feature `client`) and
-//! `completions` (every build). A build without `server` has no default
-//! command: `vota` alone shows the help.
+//! `server`), the admin API client `ballot …` (cargo feature `client`), and
+//! `completions` and `man` (every build). A build without `server` has no
+//! default command: `vota` alone shows the help.
 
 #[cfg(feature = "server")]
 mod admin_token;
 #[cfg(feature = "client")]
 mod ballot;
+mod completions;
 #[cfg(any(feature = "server", feature = "client"))]
 mod escape;
+mod man;
 #[cfg(feature = "server")]
 mod serve;
 
 #[cfg(feature = "server")]
 use std::io::IsTerminal as _;
-#[cfg(feature = "server")]
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{CommandFactory as _, Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand, ValueHint};
 #[cfg(feature = "server")]
 use tracing_subscriber::EnvFilter;
 
@@ -36,9 +37,15 @@ use crate::config::Config;
 )]
 pub struct Cli {
     /// TOML config file; `VOTA_*` environment variables override its
-    /// values. Not used by `ballot` and `completions`.
+    /// values. Not used by `ballot`, `completions` and `man`.
     #[cfg(feature = "server")]
-    #[arg(long, global = true, env = "VOTA_CONFIG", value_name = "FILE")]
+    #[arg(
+        long,
+        global = true,
+        env = "VOTA_CONFIG",
+        value_name = "FILE",
+        value_hint = ValueHint::FilePath
+    )]
     config: Option<PathBuf>,
 
     #[command(subcommand)]
@@ -60,32 +67,34 @@ enum Command {
     #[cfg(feature = "client")]
     Ballot(Box<ballot::BallotArgs>),
     /// Print shell completions for the whole CLI on stdout.
-    Completions {
-        #[arg(value_enum)]
-        shell: Shell,
+    Completions(completions::CompletionsArgs),
+    /// Write a man page for every command (`vota.1`, `vota-serve.1`,
+    /// `vota-ballot-create.1` and so on) into a directory.
+    Man {
+        /// The directory for the pages; created if missing. Existing pages
+        /// in it are overwritten.
+        #[arg(value_name = "DIR", value_hint = ValueHint::DirPath)]
+        out_dir: PathBuf,
     },
-}
-
-/// A shell `completions` writes for.
-#[derive(Clone, Copy, ValueEnum)]
-enum Shell {
-    Bash,
-    Zsh,
-    Fish,
 }
 
 impl Cli {
     /// Runs the parsed command; returns the exit code of a command that
     /// sets its own (`ballot`).
     pub async fn run(self) -> anyhow::Result<ExitCode> {
-        // The client, the completions and `admin-token generate` need no
-        // configuration and no database, and create no files. They log nothing, so nothing (such
-        // as the Admin Token) can leak into a log.
+        // The client, the completions, the man pages and `admin-token
+        // generate` need no configuration and no database, and create no
+        // files (but the pages). They log nothing, so nothing (such as the
+        // Admin Token) can leak into a log.
         match self.command {
             #[cfg(feature = "client")]
             Some(Command::Ballot(ballot)) => Ok(ballot.run().await),
-            Some(Command::Completions { shell }) => {
-                print_completions(shell)?;
+            Some(Command::Completions(completions)) => {
+                completions.run()?;
+                Ok(ExitCode::SUCCESS)
+            }
+            Some(Command::Man { out_dir }) => {
+                man::write_pages(&out_dir)?;
                 Ok(ExitCode::SUCCESS)
             }
             // Needs neither the configuration nor the database.
@@ -130,23 +139,6 @@ async fn run_server_command(
         Command::Serve => serve::run(config).await,
         Command::AdminToken(command) => command.run(config).await,
         _ => unreachable!("handled by Cli::run"),
-    }
-}
-
-/// Writes the completion script for `shell` to stdout. A reader that stops
-/// early (`| head`) is no error.
-fn print_completions(shell: Shell) -> anyhow::Result<()> {
-    use std::io::Write as _;
-    let shell = match shell {
-        Shell::Bash => clap_complete::Shell::Bash,
-        Shell::Zsh => clap_complete::Shell::Zsh,
-        Shell::Fish => clap_complete::Shell::Fish,
-    };
-    let mut script = Vec::new();
-    clap_complete::generate(shell, &mut Cli::command(), "vota", &mut script);
-    match std::io::stdout().lock().write_all(&script) {
-        Err(error) if error.kind() != std::io::ErrorKind::BrokenPipe => Err(error.into()),
-        _ => Ok(()),
     }
 }
 

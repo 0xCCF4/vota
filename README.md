@@ -15,11 +15,11 @@ It is one Rust binary with one SQLite database, meant to run behind a reverse pr
 - **Purge Date**: every Ballot is deleted automatically (by default four weeks after its deadline), or earlier on request.
 - **Admin bookkeeping**: a **Group** to fetch a survey's results together and a hidden **Voter Reference** (unique within the Group) to know whose Ballot is whose. Neither is ever shown to the voter.
 - **Results API**: list Ballots with their raw results, filtered by Group and Ballot Status (`unanswered`, `answered`, `auto_fallback`).
-- **Voting page** that works without JavaScript and is enhanced by a small self-hosted script (local-time countdown, saving without reload). Markdown descriptions are sanitised. Nothing loads from third parties, and a strict Content Security Policy applies.
+- **Voting page** that works without JavaScript and is enhanced by a small self-hosted script (local-time countdown; on Editable Ballots every change is saved at once, with retries and per-Option feedback). Markdown descriptions are sanitised. Nothing loads from third parties, and a strict Content Security Policy applies.
 - **Themes**: three built-in ones (`classic`, `dark`, `minimal`), more from a theme folder, plus per-Ballot accent colour and logo.
 - **Security**: strict input sanitization at one boundary, uniform not-found for unknown tokens, rate limiting of failed lookups and failed Admin Token checks per client IP (trusted-proxy aware), Admin Tokens stored only as hashes and never logged, an audit log of admin requests, connection limits and timeouts, strict security headers on every response, and `Cache-Control: no-store` on every voter page and API response. See [SECURITY.md](SECURITY.md).
-- **Admin Tokens** created, listed and revoked with a local CLI; no restart needed.
-- **Admin CLI client**: `vota ballot create|get|list|edit|extend|delete` talks to the admin API of a running server from any machine, with shell completions.
+- **Admin Tokens** created, listed and revoked with a local CLI, no restart needed; or provisioned declaratively in files the server reads at startup (e.g. agenix secrets, `vota admin-token generate`).
+- **Admin CLI client**: `vota ballot create|get|list|edit|extend|delete` talks to the admin API of a running server from any machine. Dates may be relative (`--voting-deadline 7d`, `extend --voting-deadline +1d`). Man pages (`vota man`) and shell completions for six shells.
 
 ## Quickstart
 
@@ -67,15 +67,16 @@ The answer (`201 Created`) contains the Ballot's `url`, among other fields:
 {"accent_color":null,"choice_mode":"single", … ,"status":"unanswered", … ,"token":"JA_JHNlyKkEVDmG0r34mOA","url":"http://localhost:8080/b/JA_JHNlyKkEVDmG0r34mOA", … }
 ```
 
-Or use the built-in client instead of `curl`. It prints just the Ballot's URL on stdout and a summary on stderr:
+Or use the built-in client instead of `curl`. It takes a deadline as a timestamp or as a duration from now (`7d`; see [relative dates](docs/reference/cli.md#relative-dates)), and prints just the Ballot's URL on stdout and a summary on stderr:
 
 ```sh
 export VOTA_URL=http://localhost:8080/ VOTA_ADMIN_TOKEN=$TOKEN
 ./target/release/vota ballot create --title "Lunch on Friday?" --option Pizza --option Sushi \
-  --voting-deadline "$(date -u -d '+7 days' +%Y-%m-%dT%H:%M:%SZ)"
+  --voting-deadline 7d
 ```
 
 ```text
+Voting Deadline: 2026-10-27T09:00:53Z (in 7d)
 http://localhost:8080/b/tRV67_NxfITbtmT2VnrOqA
 Created Ballot 1: Lunch on Friday?
 Status:          unanswered
@@ -91,7 +92,7 @@ curl -s http://localhost:8080/admin/ballots -H "Authorization: Bearer $TOKEN"
 ./target/release/vota ballot list
 ```
 
-The Ballot now has `"status":"answered"` and a `result`. See [`vota ballot`](docs/reference/cli.md#ballot) for every command and flag, and `vota completions bash|zsh|fish` for shell completions. Stop the server with Ctrl-C.
+The Ballot now has `"status":"answered"` and a `result`. See [`vota ballot`](docs/reference/cli.md#ballot) for every command and flag, `vota completions <shell>` for shell completions (bash, zsh, fish, elvish, PowerShell, nushell) and `vota man <dir>` for man pages; the Nix packages install both. Stop the server with Ctrl-C.
 
 **On NixOS**, skip the build and the config file: the flake's module runs Vota as a hardened systemd service, and `vota-admin-token` creates Admin Tokens against its database:
 

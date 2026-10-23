@@ -22,12 +22,12 @@ nix build                       # the package; runs `cargo test` in its checkPha
 nix flake check -L              # evaluates the flake, builds the package and runs the NixOS VM test
 ```
 
-**Cargo features.** `server` (`serve`, `admin-token`, the web server and the database) and `client` (`vota ballot`, the admin API client) are both on by default; `completions` is in every build. The other builds:
+**Cargo features.** `server` (`serve`, `admin-token`, the web server and the database) and `client` (`vota ballot`, the admin API client) are both on by default; `completions` and `man` are in every build. The other builds:
 
 ```sh
-cargo build --no-default-features --features client   # client only: ballot, completions
-cargo build --no-default-features --features server   # server only: serve, admin-token, completions
-cargo build --no-default-features                     # completions only
+cargo build --no-default-features --features client   # client only: ballot, completions, man
+cargo build --no-default-features --features server   # server only: serve, admin-token, completions, man
+cargo build --no-default-features                     # completions and man only
 nix build .#vota-client                               # the client-only package
 ```
 
@@ -43,7 +43,7 @@ cargo test --no-default-features --features client   # likewise for the others
 
 Server code is gated in `src/lib.rs` (every module but `cli`, and `input`'s character rules, which the client's output escaping shares) and in `src/cli.rs`; its dependencies are optional and listed under `server` in `Cargo.toml`. A test file that needs the server starts with `#![cfg(feature = "server")]` (the client tests with `all(unix, feature = "server", feature = "client")`, as they start a real server), so none is lost from the default run. `tests/commands_per_feature.rs` checks which commands each build has.
 
-**The NixOS module** (`nix/module.nix`, exported as `nixosModules.default`) has an end-to-end VM test in `nix/vm-test.nix`, wired into the flake's `checks` on Linux (`x86_64-linux`, `aarch64-linux`). It boots a VM with `services.vota`, creates an Admin Token with `vota-admin-token` and provisions one from a root-only file through `adminTokenFiles` (systemd credentials), creates a Ballot through the admin API under the sub-path `/polls/`, creates and lists one with the `vota ballot` client on the PATH (and checks that its bash completions are installed), reads a local Voting Deadline in the system's zone (`time.timeZone`, which `default_time_zone` follows), fetches it through the voter API (with its `logo_url` and logo under `/polls/`), lists and revokes Admin Tokens with the wrapper (and checks that no token reaches the journal), checks the sandbox (dynamic user, no writes outside the state directory), that the `vota-admin-token` wrapper passes `$VAR` in arguments literally, the connection limits (`LimitNOFILE`, a silent client disconnected), that `systemctl stop` is graceful, that state survives a restart under a new dynamic user, the admin audit log and `last_used_at`, the failed-Admin-Token-check limit behind the proxy (three `401`s, then `429`), and the health check: `/healthz` refuses forwarded requests, startup waits for it, and a frozen service (`kill -STOP`) is restarted by the check timer, and that a database file the service can't make `0600` (owned by another user) is logged as a warning while the service still starts. Run it alone with:
+**The NixOS module** (`nix/module.nix`, exported as `nixosModules.default`) has an end-to-end VM test in `nix/vm-test.nix`, wired into the flake's `checks` on Linux (`x86_64-linux`, `aarch64-linux`). It boots a VM with `services.vota`, creates an Admin Token with `vota-admin-token` and provisions one from a root-only file through `adminTokenFiles` (systemd credentials), creates a Ballot through the admin API under the sub-path `/polls/`, creates and lists one with the `vota ballot` client on the PATH (and checks that the man pages and the bash, zsh and fish completions of `vota` and the wrapper are installed, and that bash and fish complete `vota bal`), reads a local Voting Deadline in the system's zone (`time.timeZone`, which `default_time_zone` follows), fetches it through the voter API (with its `logo_url` and logo under `/polls/`), lists and revokes Admin Tokens with the wrapper (and checks that no token reaches the journal), checks the sandbox (dynamic user, no writes outside the state directory), that the `vota-admin-token` wrapper passes `$VAR` in arguments literally, the connection limits (`LimitNOFILE`, a silent client disconnected), that `systemctl stop` is graceful, that state survives a restart under a new dynamic user, the admin audit log and `last_used_at`, the failed-Admin-Token-check limit behind the proxy (three `401`s, then `429`), and the health check: `/healthz` refuses forwarded requests, startup waits for it, and a frozen service (`kill -STOP`) is restarted by the check timer, and that a database file the service can't make `0600` (owned by another user) is logged as a warning while the service still starts. Run it alone with:
 
 ```sh
 nix build .#checks.x86_64-linux.nixos-vm -L
@@ -72,6 +72,8 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 The flake's source filter excludes `docs/`, `.scratch/`, `nix/`, `flake.nix`, `flake.lock` and every `*.md` file, so documentation changes don't trigger a rebuild of the package.
 
+**Man pages and completions in the packages.** The flake's `postInstall` runs the freshly built binary: `vota completions bash|zsh|fish|nushell` into `installShellCompletion`, and `vota man` into `installManPage`, so both `vota` and `vota-client` carry the pages and completions of exactly their build (skipped when cross-compiling). `clap_mangen` is not behind a cargo feature: it and `roff` are small, pure Rust and depend only on clap, and every build (crates.io included) can then write its own pages. The page texts clap doesn't know (environment variables, exit codes, examples) live in `src/cli/man.rs`; keep its `ballot` exit codes in step with `cli/ballot.rs` (usage errors) and `cli/ballot/connection.rs` (HTTP status to exit code) and the [CLI reference](docs/reference/cli.md#exit-codes-of-ballot). The NixOS module builds the `vota-admin-token` wrapper with completions of its own from `vota completions <shell> --admin-token-wrapper`; its man page is the package's `vota-admin-token(1)`. A new command is caught by `tests/commands_per_feature.rs`, and its page and completions by `tests/man_pages_cli.rs` and `tests/completions_cli.rs`, which walk the clap definition.
+
 ## Code layout and module boundaries
 
 ```text
@@ -79,7 +81,7 @@ src/
 ├── main.rs          only parses the CLI and dispatches
 ├── lib.rs           the module tree and its cargo feature gates
 ├── app.rs           AppState, the router (`app`, nested under the base path), /healthz
-├── cli/             clap commands (cli.rs gates them by cargo feature): serve (with its accept loop and connection limits, serve/connections.rs), admin-token create/list/revoke/generate, completions, and the admin API client ballot (cargo feature `client`): ballot.rs, its HTTP code in ballot/connection.rs, bodies in ballot/body.rs, readable output in ballot/render.rs
+├── cli/             clap commands (cli.rs gates them by cargo feature): serve (with its accept loop and connection limits, serve/connections.rs), admin-token create/list/revoke/generate, completions (completions.rs; also the hidden `--admin-token-wrapper` for the NixOS wrapper), man (man.rs: clap_mangen pages plus ENVIRONMENT, EXIT STATUS, EXAMPLES, SEE ALSO), and the admin API client ballot (cargo feature `client`): ballot.rs, its HTTP code in ballot/connection.rs, bodies in ballot/body.rs, relative date flags (`3d`, `+7d`) resolved to timestamps in ballot/dates.rs, readable output in ballot/render.rs
 ├── config.rs        configuration: defaults → TOML → VOTA_* env
 ├── domain/          Ballot rules, validated newtypes (e.g. OptionId), Ballot Status, Theme names and accent colour, Admin Token secrets and expiry rules, the Admin Tokens from files (hashes), Clock, token generation. Pure, no I/O.
 ├── input/           untrusted_value request types and ALL sanitizers. The only place raw input is unboxed. Its character rules (characters.rs) are shared with the CLI's output escaping.
@@ -129,7 +131,7 @@ Every sanitizer has hostile-input tests through the seam (`tests/*_hostile_input
 
 ### Add a migration
 
-1. Add `migrations/NNNN_short_description.sql` with the next number (currently the last is `0010_admin_token_last_used.sql`). Migrations are applied in order at startup and are never edited once released, because their checksums are recorded in `_sqlx_migrations`.
+1. Add `migrations/NNNN_short_description.sql` with the next number (currently the last is `0011_allow_no_option.sql`). Migrations are applied in order at startup and are never edited once released, because their checksums are recorded in `_sqlx_migrations`.
 2. Write it for existing databases: `ALTER TABLE … ADD COLUMN` with a `DEFAULT` or nullable, and `CHECK` constraints that mirror the domain rules (see `0009_theme_tweaks.sql`). Tables are `STRICT`. Timestamps are UTC Unix milliseconds in `INTEGER` columns.
 3. Use the new column only in `src/data/` (the select macro, `BallotRow`, `load`, inserts and updates).
 4. `cargo test` applies all migrations to a fresh database in every test. Also try the binary on a database created by the previous release.
@@ -147,7 +149,7 @@ Every sanitizer has hostile-input tests through the seam (`tests/*_hostile_input
 Say Ballots get a new optional admin field `note` (single-line text, 1–200 characters). The touch points, in TDD order:
 
 1. **Tests**: create, fetch, edit (set, keep, clear with `null`), list; hostile inputs; whether the voter may see it (voter API and page must not contain it if it is admin-only, like `group_and_voter_reference_never_reach_the_voter`).
-2. **Migration**: `migrations/0011_ballot_note.sql`: `ALTER TABLE ballots ADD COLUMN note TEXT;`.
+2. **Migration**: `migrations/0012_ballot_note.sql`: `ALTER TABLE ballots ADD COLUMN note TEXT;`.
 3. **Domain** (`src/domain/ballot.rs`): a `Note` newtype like `Group` (`MAX_CHARS`, `new(…, Sanitized)`, `from_store`). Add the field to `NewBallot`, `BallotDraft` (and `BallotDraft::new`), `BallotChanges` and `Ballot`.
 4. **Input DTOs and sanitizer** (`src/input/ballot.rs`):
    - `CreateBallotRequest`: `#[serde(default, deserialize_with = "present")] note: Option<String>` (may be absent, `null` rejected).
@@ -168,8 +170,8 @@ A new **configuration option** goes into `Config` in `src/config.rs` (with its d
 | ---- | ----- |
 | Domain glossary (use these terms; avoid the listed synonyms, e.g. never "poll" for a Ballot) | [CONTEXT.md](CONTEXT.md) |
 | Architecture decisions | [docs/adr/](docs/adr/) ([ADR 0001](docs/adr/0001-admin-api-shares-public-port.md), [ADR 0002](docs/adr/0002-sub-path-proxy-forwards-the-prefix.md)) |
-| Spec (the original product requirements, with later decisions appended) | [.scratch/poll-web/spec.md](.scratch/poll-web/spec.md) |
-| Tickets | [.scratch/poll-web/issues/](.scratch/poll-web/issues/) |
+| Spec (the original product requirements, with later decisions appended) | `.scratch/poll-web/spec.md`, kept locally (`.scratch/` is gitignored, not published) |
+| Tickets | `.scratch/poll-web/issues/`, kept locally like the spec (not published) |
 | User and operator docs | [docs/](docs/README.md) |
 | Agent conventions | [CLAUDE.md](CLAUDE.md), [docs/agents/](docs/agents/) |
 

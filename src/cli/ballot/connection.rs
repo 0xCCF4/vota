@@ -19,7 +19,13 @@ pub(super) struct ConnectionArgs {
     /// `https://example.org/polls/` (its `public_base_url`). A missing
     /// trailing slash is added. Only `https://`, or `http://` to a loopback
     /// host (see --allow-http).
-    #[arg(long, env = "VOTA_URL", global = true, value_name = "URL")]
+    #[arg(
+        long,
+        env = "VOTA_URL",
+        global = true,
+        value_name = "URL",
+        value_hint = clap::ValueHint::Url
+    )]
     url: Option<String>,
     /// The Admin Token. Unsafe: it is visible in `ps` and the shell
     /// history; prefer --token-file or the environment variable

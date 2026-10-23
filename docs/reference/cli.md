@@ -9,7 +9,8 @@ vota [--config <FILE>] admin-token list [--json]
 vota [--config <FILE>] admin-token revoke (<ID> | --label <LABEL>)
 vota admin-token generate
 vota ballot <create|get|list|edit|extend|delete> [<connection flags>] [--json] …
-vota completions <bash|zsh|fish>
+vota completions <bash|zsh|fish|elvish|powershell|nushell>
+vota man <DIR>
 vota --help | --version
 ```
 
@@ -22,14 +23,14 @@ Which commands a `vota` binary has depends on the cargo features it was built wi
 | `server` | [`serve`](#serve), [`admin-token …`](#admin-token-create), the `--config` option | The web server and the database: axum, hyper, SQLite (sqlx), templates, Themes and static assets, configuration loading. |
 | `client` | [`ballot …`](#ballot) | The admin API client: reqwest with rustls. |
 
-[`completions`](#completions), `--help` and `--version` are in every build.
+[`completions`](#completions), [`man`](#man), `--help` and `--version` are in every build.
 
 | Build | Command | Commands it has |
 | ----- | ------- | --------------- |
 | Full (default) | `cargo build --release` | all |
-| Client only, for admin workstations | `cargo build --release --no-default-features --features client` | `ballot`, `completions` |
-| Server only | `cargo build --release --no-default-features --features server` | `serve`, `admin-token`, `completions` |
-| Neither | `cargo build --release --no-default-features` | `completions` |
+| Client only, for admin workstations | `cargo build --release --no-default-features --features client` | `ballot`, `completions`, `man` |
+| Server only | `cargo build --release --no-default-features --features server` | `serve`, `admin-token`, `completions`, `man` |
+| Neither | `cargo build --release --no-default-features` | `completions`, `man` |
 
 `admin-token` belongs to `server`: it works directly on the server's database (it needs the configuration, SQLite and the database migrations), so it runs on the server's host anyway. A client-only build manages Ballots through the admin API with a token created there. [`admin-token generate`](#admin-token-generate) needs no database, but stays with the other `admin-token` commands in `server`; where only a client build is at hand, its [shell one-liner](#admin-token-generate) makes the same token.
 
@@ -43,9 +44,9 @@ Without `server` there is no default command: `vota` alone prints the help (exit
 | `-h`, `--help`    |               | Help for the command or subcommand. |
 | `-V`, `--version` |               | Prints `vota 0.1.0`. |
 
-`--config` is global, so it may come before or after the subcommand. See the [configuration reference](configuration.md) for every option. [`ballot`](#ballot) and [`completions`](#completions) ignore it (and `VOTA_CONFIG`): they need no configuration and no database, so they run on any machine.
+`--config` is global, so it may come before or after the subcommand. See the [configuration reference](configuration.md) for every option. [`ballot`](#ballot), [`completions`](#completions) and [`man`](#man) ignore it (and `VOTA_CONFIG`): they need no configuration and no database, so they run on any machine.
 
-**Logging** (of the server commands; `ballot` and `completions` log nothing) goes to stderr. Its level is set with the standard `RUST_LOG` variable (default `info`; e.g. `RUST_LOG=debug`, `RUST_LOG=vota=debug,info`). It is coloured only when stderr is a terminal, so a journal or log file gets plain text. stdout carries only command output, such as a new Admin Token. Admin Tokens, Ballot Tokens and Voter References are never logged. `serve` logs every admin request in the [audit log](admin-api.md#audit-log).
+**Logging** (of the server commands; `ballot`, `completions` and `man` log nothing) goes to stderr. Its level is set with the standard `RUST_LOG` variable (default `info`; e.g. `RUST_LOG=debug`, `RUST_LOG=vota=debug,info`). It is coloured only when stderr is a terminal, so a journal or log file gets plain text. stdout carries only command output, such as a new Admin Token. Admin Tokens, Ballot Tokens and Voter References are never logged. `serve` logs every admin request in the [audit log](admin-api.md#audit-log).
 
 **Every server command** (`serve`, `admin-token …`, except `admin-token generate`) loads the configuration, opens (and if needed creates) the database and applies pending migrations (except a `create` refused for its label or its expiry, which stops before the database is opened and leaves no trace). Only `serve` also loads the Theme and logo folders. The `admin-token` commands never read them, so a broken Theme or logo stops the server but never token management. An unknown `VOTA_*` environment variable is ignored with a warning on every command; an unknown key in the config file stops every command (see the [configuration reference](configuration.md#environment-variables)).
 
@@ -277,14 +278,14 @@ The token works once a server lists its file in `admin_token_files` and is (re)s
 
 ## `ballot`
 
-A client for the [admin API](admin-api.md) of a running Vota server: it builds the request from flags, sends it over HTTP(S), and prints the answer. It is a thin client. The server checks every value, and the client only parses what it needs to build the JSON (the values of `--choice-mode`, `--submission-mode` and `--status`, and which flags go together), so its errors are the API's. It needs no config file and no database, so it may run on any machine that reaches the server. It is part of the default build (cargo feature `client`); a client-only build has it without the server (see [Builds and cargo features](#builds-and-cargo-features)).
+A client for the [admin API](admin-api.md) of a running Vota server: it builds the request from flags, sends it over HTTP(S), and prints the answer. It is a thin client. The server checks every value, and the client only parses what it needs to build the JSON (the values of `--choice-mode`, `--submission-mode` and `--status`, which flags go together, and [relative dates](#relative-dates), which it turns into timestamps), so its errors are the API's. It needs no config file and no database, so it may run on any machine that reaches the server. It is part of the default build (cargo feature `client`); a client-only build has it without the server (see [Builds and cargo features](#builds-and-cargo-features)).
 
 ```text
 vota ballot create (<field flags> | --body <FILE|->)
 vota ballot get <ID>
 vota ballot list [--group <GROUP>] [--status unanswered|answered|auto_fallback]
 vota ballot edit <ID> (<field flags> <--clear-* flags> | --body <FILE|->)
-vota ballot extend <ID> --voting-deadline <DATETIME>
+vota ballot extend <ID> --voting-deadline <DATETIME|DURATION|+DURATION>
 vota ballot delete <ID> [--yes]
 ```
 
@@ -319,7 +320,7 @@ The examples below ran against `vota serve` with `public_base_url = "http://loca
 
 ### Field flags
 
-`create` and `edit` take the Ballot's fields as flags. Each flag becomes one field of the JSON body; a field without a flag is left out, so on `edit` it keeps its value. Values go to the server as given: it checks text, timestamps, colours and limits, see the [request fields](admin-api.md#request-fields).
+`create` and `edit` take the Ballot's fields as flags. Each flag becomes one field of the JSON body; a field without a flag is left out, so on `edit` it keeps its value. Values go to the server as given (except [relative dates](#relative-dates), which become timestamps): it checks text, timestamps, colours and limits, see the [request fields](admin-api.md#request-fields).
 
 | Flag | Field |
 | ---- | ----- |
@@ -330,8 +331,8 @@ The examples below ran against `vota serve` with `public_base_url = "http://loca
 | `--choice-mode single\|multiple` | `choice_mode` |
 | `--allow-no-option[=true\|false]` | `allow_no_option`: [Allow No Option](admin-api.md#request-fields), the voter may answer with no Option (multiple choice only). The flag alone sends `true`; `--allow-no-option=false` sends `false`, which is how `edit` turns it off (the value needs the `=`; anything but `true` or `false` is a usage error). |
 | `--submission-mode final\|editable` | `submission_mode` |
-| `--voting-deadline <DATETIME>` | `voting_deadline`: RFC 3339, e.g. `2026-12-01T12:00:00+01:00`, or without an offset (`2026-12-01T12:00`) a local time in the server's [`default_time_zone`](configuration.md#default_time_zone); see [Conventions](admin-api.md#conventions). The client passes it on unchecked. |
-| `--purge-date <DATETIME>` | `purge_date`, in the same forms |
+| `--voting-deadline <DATETIME\|DURATION>` | `voting_deadline`: RFC 3339, e.g. `2026-12-01T12:00:00+01:00`, or without an offset (`2026-12-01T12:00`) a local time in the server's [`default_time_zone`](configuration.md#default_time_zone); see [Conventions](admin-api.md#conventions). The client passes a timestamp on unchecked. Or a [relative date](#relative-dates): `3d` from now, and on `edit` `+1d` after the current Voting Deadline. |
+| `--purge-date <DATETIME\|DURATION\|+DURATION>` | `purge_date`, in the same forms; `+7d` is 7 days after the Voting Deadline of the same command, or on `edit` without one, the Ballot's current one. |
 | `--fallback <LABEL>` | `fallback`: an Option's label; repeat it for more than one. |
 | `--group <GROUP>` | `group` |
 | `--voter-reference <REF>` | `voter_reference` |
@@ -351,6 +352,68 @@ error: the argument '--body <FILE|->' cannot be used with:
   …
 $ echo 'not json' | vota ballot create --body -
 Error: --body: the file is not JSON                               (exit 2)
+```
+
+### Relative dates
+
+`--voting-deadline` and `--purge-date` (on `create` and `edit`) and `extend`'s `--voting-deadline` also take a duration. The client turns it into an RFC 3339 UTC timestamp before sending, so the API sees only timestamps:
+
+| Form | Example | Means |
+| ---- | ------- | ----- |
+| Timestamp | `2026-12-01T12:00:00+01:00`, `2026-12-01T12:00` | Sent as given; the server reads it (see the flag table). Any value that starts like a date (`YYYY-`) is a timestamp. |
+| Duration | `--voting-deadline 3d`, `--purge-date 2m` | That long from now, by the clock of the machine the client runs on, to the whole second. |
+| `+` duration | `--purge-date +7d`, `extend --voting-deadline +1d` | That long after the Voting Deadline: for `--purge-date`, the one given in the same command, otherwise (on `edit`) the Ballot's current one; for `--voting-deadline` (on `edit` and `extend`), the Ballot's current one. |
+
+A duration is one or more `<number><unit>` groups without spaces, such as `3d`, `1m2w` or `2d12h`. The units, in lower case:
+
+| Unit | Means |
+| ---- | ----- |
+| `min` (`mins`, `minute`, `minutes`) | minutes |
+| `h` | hours |
+| `d` | days (24 hours) |
+| `w` | weeks (7 days) |
+| `m` (`mo`, `month`, `months`) | calendar months |
+| `y` | calendar years (12 months) |
+
+**`m` is months here, not minutes.** The server's configuration (`max_date_horizon`, `default_purge_gap`, …) and the client's own `--timeout` use [humantime](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) durations, where `m` is minutes and `M` months; the date flags don't (`M` is refused there). Minutes are `min`: `--voting-deadline 90min`.
+
+Months and years are added first, as calendar months: the same day and time of day in the target month, or the month's last day if it has no such day (`+1m` from 31 January is 28 or 29 February, `+1m` from 31 March is 30 April). Then minutes, hours, days and weeks are added as fixed spans in UTC: `d` is always 24 hours, also across a daylight saving change in the server's `default_time_zone`, so `+1d` from 12:00 local time can be 11:00 or 13:00 local time the next day. Give a timestamp to pin a local time of day.
+
+Each resolved value is shown on stderr before the request is sent, so stdout keeps its contract (the URL of `create`, the JSON with `--json`):
+
+```text
+$ vota ballot create --title "Lunch on Friday?" --option Pizza --option Sushi --voting-deadline 3d --purge-date +2w
+Voting Deadline: 2026-10-25T14:00:00Z (in 3d)
+Purge Date: 2026-11-08T14:00:00Z (2w after the Voting Deadline)
+http://localhost:8080/b/Xsa6qTjvUXT_6_Y-sWMdpQ
+Created Ballot 1: Lunch on Friday?
+…
+$ vota ballot edit 1 --purge-date +1m
+Purge Date: 2026-11-25T14:00:00Z (1m after the Voting Deadline)
+Ballot 1: Lunch on Friday?
+…
+$ vota ballot extend 1 --voting-deadline +1d
+Voting Deadline: 2026-10-26T14:00:00Z (1d after the current Voting Deadline)
+…
+```
+
+Notes:
+
+- **A `+` that needs the Ballot's current deadline** (`edit` or `extend` with `--voting-deadline +…`, or `edit` with `--purge-date +…` and no `--voting-deadline`) first sends `GET /admin/ballots/{id}`, then the change. If another admin moves the deadline in between, the value is relative to the deadline the `GET` saw. Admin edits are not revision-checked, so nothing detects this; it only matters with concurrent admins.
+- **`+` on `create`**: `--voting-deadline +1d` is a usage error, since a new Ballot has no deadline to be relative to, and so is `--purge-date +7d` without a `--voting-deadline` in the same command.
+- **`+` after a deadline the client can't read**: `--purge-date +7d` with a `--voting-deadline` that is a local time without offset (`2026-12-01T12:00`) is a usage error, since only the server knows its time zone. Give the deadline with an offset or as a duration, or the Purge Date as a timestamp.
+- **The client checks only the form.** Whether the result is in the future, within `max_date_horizon` and in order (Purge Date not before the deadline; `extend` later than the current deadline) is the server's to check, as for any timestamp. A lone `--purge-date 8min` (8 minutes from now) is likely before the deadline and gets the server's `422`.
+- `--body` is sent unchanged: relative dates in a JSON file are not resolved.
+
+An unreadable value is a usage error (exit 2) that names the flag and lists the forms and units, and nothing is sent:
+
+```text
+$ vota ballot create --title T --option A --option B --voting-deadline "next friday"
+Error: --voting-deadline next friday: not a timestamp or a duration; give an RFC 3339 timestamp (2026-12-01T12:00:00+01:00), a local date-time in the server's default time zone (2026-12-01T12:00), a duration from now (3d, 1m2w, 90min) or + and a duration after the Voting Deadline (+7d); a duration is numbers with units, without spaces: min (minutes), h (hours), d (days), w (weeks), m (months), y (years)      (exit 2)
+$ vota ballot create --title T --option A --option B --voting-deadline 3M
+Error: --voting-deadline 3M: unknown unit "M"; give an RFC 3339 timestamp …      (exit 2)
+$ vota ballot create --title T --option A --option B --voting-deadline +1d
+Error: --voting-deadline +1d: + is relative to the current Voting Deadline, and a new Ballot has none; give a timestamp or a duration from now (3d)      (exit 2)
 ```
 
 ### Output
@@ -522,7 +585,7 @@ Error: 409 already_answered: this Ballot has a Response; it can no longer be edi
 
 ### `ballot extend`
 
-`POST /admin/ballots/{id}/extend`. `--voting-deadline <DATETIME>` (with or without offset, as for `create`) is required and must be later than the current one; an extension reopens a closed Ballot without a Response. Prints the Ballot like `get`:
+`POST /admin/ballots/{id}/extend`. `--voting-deadline` (a timestamp with or without offset, as for `create`, a duration from now, or `+` and a duration after the current deadline: see [Relative dates](#relative-dates)) is required and must be later than the current one; an extension reopens a closed Ballot without a Response. Prints the Ballot like `get`:
 
 ```text
 $ vota ballot extend 1 --voting-deadline 2026-11-03T12:00:00Z
@@ -575,7 +638,7 @@ Error: 404 not_found                                              (exit 3)
 $ vota ballot create --title "" --option A --option B --voting-deadline 2026-10-27T12:00:00Z
 Error: 422 invalid_input: must not be empty (field: title)        (exit 5)
 
-$ vota ballot create --title T --option A --option B --voting-deadline "next friday"
+$ vota ballot create --title T --option A --option B --voting-deadline "2026-12-01 12:00"
 Error: 422 invalid_input: not an RFC 3339 timestamp, or a local date-time in the server's default time zone (YYYY-MM-DDTHH:MM[:SS]) (field: voting_deadline)   (exit 5)
 
 $ vota ballot list --token vta_wrong
@@ -624,7 +687,7 @@ Warning: --insecure: the server's TLS certificate is not verified; anyone on the
 | Code | When |
 | ---- | ---- |
 | `0` | Success. |
-| `2` | Usage error: from clap (unknown or conflicting flags, a bad `--choice-mode`, `--submission-mode` or `--status` value), no Admin Token, no URL, a refused URL, an unreadable `--token-file`, `--description-file`, `--body` or `--ca-cert`, a `--body` that is not JSON, or `delete` without a terminal and without `--yes`. Nothing was sent. |
+| `2` | Usage error: from clap (unknown or conflicting flags, a bad `--choice-mode`, `--submission-mode` or `--status` value), no Admin Token, no URL, a refused URL, an unreadable `--token-file`, `--description-file`, `--body` or `--ca-cert`, a `--body` that is not JSON, a date flag that is neither a timestamp nor a [relative date](#relative-dates) (or a `+` with nothing to be relative to), or `delete` without a terminal and without `--yes`. Nothing was sent. |
 | `3` | `404`: no live Ballot with this ID (or a wrong `--url`). |
 | `4` | `409`: the Ballot can't be edited now, or the Voter Reference is taken in the Group. |
 | `5` | `400`, `413`, `415` or `422`: the server refused the request's content. |
@@ -634,12 +697,15 @@ Warning: --insecure: the server's TLS certificate is not verified; anyone on the
 
 ## `completions`
 
-Prints a completion script for the whole CLI (commands, flags and their values) on stdout, for `bash`, `zsh` or `fish`. It needs no config file or database.
+Prints a completion script for the whole CLI (the commands of the build, their flags, and the values of flags with fixed values) on stdout, for `bash`, `zsh`, `fish`, `elvish`, `powershell` or `nushell`. It needs no config file or database. Files and directories are completed for the flags that take a path (`--config`, `--body`, `--description-file`, `--token-file`, `--ca-cert`, the directory of `man`), URLs for `--url` where the shell supports it (zsh's `_urls`). zsh, fish, elvish, PowerShell and nushell also show each flag's help text.
 
 ```sh
 vota completions bash > ~/.local/share/bash-completion/completions/vota
 vota completions zsh > ~/.zfunc/_vota          # a directory in $fpath
 vota completions fish > ~/.config/fish/completions/vota.fish
+vota completions nushell | save -f ~/.config/nushell/autoload/vota.nu   # in nu: a directory of $nu.user-autoload-dirs
+eval (vota completions elvish | slurp)         # in ~/.config/elvish/rc.elv
+vota completions powershell | Out-String | Invoke-Expression   # in $PROFILE
 ```
 
 The first lines of each:
@@ -662,4 +728,35 @@ function __fish_vota_global_optspecs
 …
 ```
 
-Any other shell is a usage error (exit 2). The Nix package installs all three scripts (see [Deployment: NixOS](../guides/deployment.md#the-ballot-client-and-shell-completions)).
+Any other shell is a usage error (exit 2). The Nix packages install the bash, zsh, fish and nushell scripts, the shells with a standard place for them in a Nix profile (see [Shell completions and man pages with Nix](#shell-completions-and-man-pages-with-nix)).
+
+A hidden flag, `--admin-token-wrapper` (builds with `server`), prints the completions of `admin-token` under the name `vota-admin-token` instead, for the NixOS module's wrapper of that name, which runs `vota admin-token "$@"` (see [Deployment: NixOS](../guides/deployment.md#creating-admin-tokens)). The module installs them with the wrapper.
+
+## `man`
+
+Writes a man page for every command and subcommand of the build into a directory, which is created if missing (existing pages in it are overwritten): `vota.1`, `vota-serve.1`, `vota-admin-token.1`, `vota-admin-token-create.1`, …, `vota-ballot.1`, `vota-ballot-create.1`, …, `vota-completions.1` and `vota-man.1`. It prints nothing, and needs no config file or database.
+
+```sh
+vota man ~/.local/share/man/man1     # on man's search path, e.g. through $MANPATH or ~/.local/bin on $PATH
+man vota-ballot-create
+```
+
+Each page has the command's description, synopsis, options (grouped as in `--help`, with their environment variables, defaults and possible values) and subcommands, then:
+
+- **ENVIRONMENT**: `VOTA_CONFIG`, `VOTA_<OPTION>` and `RUST_LOG` on the pages of the server commands, `VOTA_URL` and `VOTA_ADMIN_TOKEN` on those of `ballot`;
+- **EXIT STATUS**: the [exit codes](#exit-codes), on the `ballot` pages [those of `ballot`](#exit-codes-of-ballot);
+- **EXAMPLES** on some pages (`serve`, `admin-token create`, `admin-token generate`, `ballot`, `ballot create`, `completions`, `man`);
+- **NOTES** on `vota-admin-token(1)`: the NixOS module's `vota-admin-token` wrapper takes the same subcommands and flags, so this page is the wrapper's manual too;
+- **SEE ALSO**: the parent and subcommand pages, and this reference.
+
+An unwritable directory is an error (exit 1, `Error: creating …` or `Error: writing …`).
+
+## Shell completions and man pages with Nix
+
+Both flake packages, `vota` (also `default`) and `vota-client`, generate the man pages and completions of their own build when they are built (`vota man`, `vota completions`) and install them: `share/man/man1/vota*.1.gz`, `share/bash-completion/completions/vota.bash`, `share/zsh/site-functions/_vota`, `share/fish/vendor_completions.d/vota.fish` and `share/nushell/vendor/autoload/vota.nu`. `vota-client` has the pages and completions of `ballot`, `completions` and `man` only. A cross-compiled package has neither, since the build can't run the binary.
+
+Where they are found:
+
+- **NixOS module** (`services.vota`): see [Deployment: NixOS](../guides/deployment.md#the-ballot-client-and-shell-completions).
+- **`environment.systemPackages`** on NixOS without the module: the same, minus the wrapper.
+- **`nix profile install`**, **home-manager's `home.packages`**: the files land in `~/.nix-profile/share` (or `/etc/profiles/per-user/<user>/share`). `man` finds the pages there through `$PATH` (man-db looks next to each `bin` directory). bash-completion and fish find the completions through `$XDG_DATA_DIRS`, which the Nix profile scripts and home-manager set. NixOS's zsh puts every profile in `$NIX_PROFILES` on its `fpath`; with home-manager, `programs.zsh.enableCompletion` does. nushell reads the vendor autoload directories under `$XDG_DATA_DIRS` (nushell 0.101 or later).

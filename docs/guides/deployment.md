@@ -52,6 +52,8 @@ Create an Admin Token on the server, as the user that owns the database and with
 vota --config /etc/vota/vota.toml admin-token create --label "survey scripts" --expires-in 180days
 ```
 
+Or provision one declaratively: write the output of [`vota admin-token generate`](../reference/cli.md#admin-token-generate) into a secret file and list it in [`admin_token_files`](../reference/configuration.md#admin_token_files) (read at startup; on NixOS, [`adminTokenFiles`](#admin-tokens-from-files-agenix)).
+
 Logs go to stderr; set the level with `RUST_LOG` (default `info`). Admin Tokens, Ballot Tokens and Voter References never appear in Vota's logs. The reverse proxy's logs are another matter: see [Access logs and Ballot Tokens](#access-logs-and-ballot-tokens).
 
 **Health check.** `GET /healthz` answers `{"now":"…","status":"ok"}` (the server's time, UTC) while the database responds, and `503` otherwise. It is for probes **on the same host** only: it answers only when the TCP peer is a loopback address (`127.0.0.0/8`, `::1`, or IPv4 loopback through an IPv6 listener) **and** the request has no `X-Forwarded-For` and no `Forwarded` header, whatever their value. Every other request, including one a local reverse proxy passes on, gets the same plain, empty `404` as an unknown path, so `/healthz` is invisible from outside. It answers at the root of the listener whatever the base path, and under a [sub-path](#under-a-sub-path) also at `<base path>healthz`. Probe the bind address, or loopback when Vota listens on all addresses (`0.0.0.0` or `::`); a specific non-loopback bind address can't be probed, because the probe's TCP peer is then that address:
@@ -426,12 +428,12 @@ The listener limits what clients can hold ([`[connections]`](../reference/config
 - [ ] Health probes run on the same host and reach `/healthz` directly (not through the proxy), e.g. `curl http://127.0.0.1:8080/healthz`.
 - [ ] `default_time_zone` is set for your voters.
 - [ ] The database directory is writable by the service user only (`0700`, `UMask=0077`) and backed up with `.backup` / `VACUUM INTO` under `umask 077` into a `0700` directory.
-- [ ] Admin Tokens are labelled, scoped to people or scripts, and given expiries where possible.
+- [ ] Admin Tokens are labelled, scoped to people or scripts, and given expiries where possible. [Admin Token files](../reference/configuration.md#admin_token_files), if any, are readable by the service user only (under systemd: a root-only secret passed with `LoadCredential=`).
 - [ ] Someone watches the journal for the [audit log](../reference/admin-api.md#audit-log)'s `vota::admin_audit` warnings (failed Admin Token checks).
 
 ## NixOS
 
-The flake exports a NixOS module, `nixosModules.default` (also `nixosModules.vota`), that runs Vota as a hardened systemd service `vota.service` and puts a `vota-admin-token` command and the `vota` binary itself (for its admin API client `vota ballot`, with shell completions) on the system path. Everything in the sections above still applies; this section covers what the module does for you.
+The flake exports a NixOS module, `nixosModules.default` (also `nixosModules.vota`), that runs Vota as a hardened systemd service `vota.service` and puts a `vota-admin-token` command and the `vota` binary itself (for its admin API client `vota ballot`), with man pages and shell completions, on the system path. Everything in the sections above still applies; this section covers what the module does for you.
 
 ### Enable the service
 
@@ -507,13 +509,13 @@ failed_lookups = 10
 window = "10m"
 ```
 
-The configuration holds no secret, so it may live in the world-readable store; Admin Tokens live only in the database. A change of `settings` restarts the service on the next `nixos-rebuild switch`, which also re-reads the Theme and logo folders.
+The configuration holds no secret, so it may live in the world-readable store; Admin Tokens live in the database, or in the secret files of [`adminTokenFiles`](#admin-tokens-from-files-agenix). A change of `settings` restarts the service on the next `nixos-rebuild switch`, which also re-reads the Theme and logo folders.
 
 ### Options
 
 | Option | Type | Default | Meaning |
 | ------ | ---- | ------- | ------- |
-| `services.vota.enable` | boolean | `false` | Run the service and install `vota-admin-token` and `vota` (the package, with its completions). |
+| `services.vota.enable` | boolean | `false` | Run the service and install `vota-admin-token` and `vota` (the package, with its man pages and completions). |
 | `services.vota.package` | package | this flake's `vota` | The Vota package. |
 | `services.vota.adminTokenFiles` | list of strings (absolute paths outside the store) | `[ ]` | Files with one pre-provisioned Admin Token each, e.g. agenix secrets; passed in as systemd credentials. See [Admin Tokens from files (agenix)](#admin-tokens-from-files-agenix) and [`admin_token_files`](../reference/configuration.md#admin_token_files). |
 | `services.vota.openFirewall` | boolean | `false` | Open `settings.port` in the firewall. Only needed when a proxy on another machine connects; then also set `settings.bind_address`. |
@@ -593,7 +595,20 @@ How it works: the module adds one `LoadCredential=vota-admin-token-<n>:<path>` p
 
 ### The ballot client and shell completions
 
-The module puts the package on the system path, so the admin API client [`vota ballot`](../reference/cli.md#ballot) is there for any user; it needs no access to the service's files, only the URL and an Admin Token. The package installs completion scripts for bash, zsh and fish (`share/bash-completion/completions/vota.bash`, `share/zsh/site-functions/_vota`, `share/fish/vendor_completions.d/vota.fish`): bash picks them up through `programs.bash.completion.enable` (on by default), zsh and fish when `programs.zsh.enable` or `programs.fish.enable` is set.
+The module puts the package on the system path, so the admin API client [`vota ballot`](../reference/cli.md#ballot) is there for any user; it needs no access to the service's files, only the URL and an Admin Token.
+
+**Man pages.** The package has one page per command: `man vota`, `man vota-ballot-create`, `man vota-admin-token`, … (see [`man`](../reference/cli.md#man)). `vota-admin-token(1)` is the page of `vota admin-token`, and with it of the module's `vota-admin-token` wrapper, which takes the same subcommands and flags. NixOS links them into the system profile when `documentation.man.enable` is on (the default).
+
+**Shell completions.** The package installs completion scripts for bash, zsh, fish and nushell (`share/bash-completion/completions/vota.bash`, `share/zsh/site-functions/_vota`, `share/fish/vendor_completions.d/vota.fish`, `share/nushell/vendor/autoload/vota.nu`), and the wrapper its own for bash, zsh and fish (`vota-admin-token.bash`, `_vota-admin-token`, `vota-admin-token.fish`: those of `admin-token`, under the wrapper's name). Each shell's NixOS module links its directory into the system profile:
+
+| Shell | Picked up when |
+| ----- | -------------- |
+| bash | `programs.bash.completion.enable` (on by default) |
+| zsh | `programs.zsh.enable` (required anyway for a user whose login shell is zsh) |
+| fish | `programs.fish.enable` (required anyway for a user whose login shell is fish) |
+| nushell | `programs.nushell.enable` |
+
+The module sets no `environment.pathsToLink` of its own: a zsh or fish user has that shell's module enabled already (NixOS asserts it for `users.users.<name>.shell`), and directories linked without their shell's module would serve no shell. Shells without a standard place in a Nix profile (elvish, PowerShell) get their script from [`vota completions`](../reference/cli.md#completions). For the package without the module (`nix profile install`, home-manager), see [Shell completions and man pages with Nix](../reference/cli.md#shell-completions-and-man-pages-with-nix).
 
 Use the public URL (`https://…`). On the server itself, the loopback port works too, with the sub-path. From the VM test, with a token created by `vota-admin-token` (see [Creating Admin Tokens](#creating-admin-tokens)):
 
@@ -779,4 +794,4 @@ sudo sh -c 'umask 077 && install -d -m 0700 /var/backups/vota && \
 
 ### The VM test
 
-The flake's checks include a NixOS VM test of the module (`checks.x86_64-linux.nixos-vm`, in [`nix/vm-test.nix`](../../nix/vm-test.nix)). It boots a VM with the service under the sub-path `/polls/` and checks: the unit is active and answers `/healthz`; every migration is applied; a token from `vota-admin-token` creates a Ballot through `POST /polls/admin/ballots`; `vota ballot` on the PATH, with that token in `VOTA_ADMIN_TOKEN`, creates and lists a Ballot under `/polls/` (and refuses to run without a token), and its bash completions are installed; a local Voting Deadline (no offset) given through `vota ballot` is read in the system's zone (`time.timeZone = "Europe/Berlin"`, which `default_time_zone` follows by default); a token from `adminTokenFiles` (a root-owned `0400` file) works for `vota ballot list` and is audited as `token_id=file:1` but never logged or listed by `vota-admin-token`, while a bogus token gets `401`; the returned Ballot URL serves the voting page and the voter API returns the Ballot with its logo; the service runs as a dynamic user that can write only to its state directory; `vota-admin-token` passes `$HOME`, `${HOME}` and an unset `$VAR` in a label literally; `LimitNOFILE` follows `connections.max_open` and a client that sends nothing is disconnected after `connections.header_read_timeout`; `systemctl stop` ends it gracefully with exit status 0 and no warning or error in the journal; the database survives a restart; admin requests appear in the audit log (with the token's ID, never the token), `admin-token list --json` records the token's last use, and a client behind the proxy that fails the Admin Token check `rate_limit.admin_failed_auth` times gets `429` while other clients go on; `/healthz` refuses requests with `X-Forwarded-For` or `Forwarded`; startup waits for `/healthz` under the base path and the periodic check passes on a healthy service; a frozen service (`kill -STOP`) is restarted by the check and answers again under a new PID. Run it with `nix flake check`, or alone with `nix build .#checks.x86_64-linux.nixos-vm -L`. It uses KVM when available and otherwise runs emulated, which is slower: without KVM the test script takes about three minutes on a 16-core machine (plus the package build, if it isn't cached).
+The flake's checks include a NixOS VM test of the module (`checks.x86_64-linux.nixos-vm`, in [`nix/vm-test.nix`](../../nix/vm-test.nix)). It boots a VM with the service under the sub-path `/polls/` and checks: the unit is active and answers `/healthz`; every migration is applied; a token from `vota-admin-token` creates a Ballot through `POST /polls/admin/ballots`; `vota ballot` on the PATH, with that token in `VOTA_ADMIN_TOKEN`, creates and lists a Ballot under `/polls/` (and refuses to run without a token); `man -w` finds the pages of `vota`, `vota-ballot-create` and `vota-admin-token`, and the bash, zsh and fish completions of `vota` and of the wrapper are installed, with `vota bal<TAB>` completed to `ballot` by bash and fish and `vota-admin-token cr<TAB>` to `create` by bash; a local Voting Deadline (no offset) given through `vota ballot` is read in the system's zone (`time.timeZone = "Europe/Berlin"`, which `default_time_zone` follows by default); a token from `adminTokenFiles` (a root-owned `0400` file) works for `vota ballot list` and is audited as `token_id=file:1` but never logged or listed by `vota-admin-token`, while a bogus token gets `401`; the returned Ballot URL serves the voting page and the voter API returns the Ballot with its logo; the service runs as a dynamic user that can write only to its state directory; `vota-admin-token` passes `$HOME`, `${HOME}` and an unset `$VAR` in a label literally; `LimitNOFILE` follows `connections.max_open` and a client that sends nothing is disconnected after `connections.header_read_timeout`; `systemctl stop` ends it gracefully with exit status 0 and no warning or error in the journal; the database survives a restart; admin requests appear in the audit log (with the token's ID, never the token), `admin-token list --json` records the token's last use, and a client behind the proxy that fails the Admin Token check `rate_limit.admin_failed_auth` times gets `429` while other clients go on; `/healthz` refuses requests with `X-Forwarded-For` or `Forwarded`; startup waits for `/healthz` under the base path and the periodic check passes on a healthy service; a frozen service (`kill -STOP`) is restarted by the check and answers again under a new PID. Run it with `nix flake check`, or alone with `nix build .#checks.x86_64-linux.nixos-vm -L`. It uses KVM when available and otherwise runs emulated, which is slower: without KVM the test script takes about three minutes on a 16-core machine (plus the package build, if it isn't cached).

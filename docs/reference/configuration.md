@@ -6,7 +6,7 @@ Vota reads its configuration in three layers. Each later layer overrides the ear
 2. a TOML file, if one is given with `--config <FILE>` or `VOTA_CONFIG=<FILE>`;
 3. environment variables `VOTA_<OPTION>`.
 
-Every server command (`serve` and `admin-token …`) loads the configuration the same way. The admin API client [`ballot …`](cli.md#ballot) and [`completions`](cli.md#completions) load none: they ignore `--config` and `VOTA_CONFIG`. No option holds a secret: Admin Tokens live in the database, or in files that [`admin_token_files`](#admin_token_files) names (see [Admin Tokens](../concepts/admin-tokens.md)).
+Every server command (`serve` and `admin-token …`) loads the configuration the same way. The admin API client [`ballot …`](cli.md#ballot), [`completions`](cli.md#completions) and [`man`](cli.md#man) load none: they ignore `--config` and `VOTA_CONFIG`. No option holds a secret: Admin Tokens live in the database, or in files that [`admin_token_files`](#admin_token_files) names (see [Admin Tokens](../concepts/admin-tokens.md)).
 
 ## Environment variables
 
@@ -199,7 +199,7 @@ The server's local time zone, for two things:
 - The voting page shows the Voting Deadline in it without JavaScript, e.g. `Tue 1 Dec 2026, 13:00 CET`. With JavaScript, the page shows the voter's local time instead, without a zone name (e.g. `Tomorrow, 13:00`).
 - The admin API reads a Voting Deadline or Purge Date given **without** a UTC offset (`2026-12-01T12:00`) as local time in it; one with an offset is read as given. A local time skipped or repeated by a daylight-saving change is refused. See [Conventions](admin-api.md#conventions).
 
-The APIs' answers are always in UTC. On NixOS the module's default is the system's zone instead of `UTC` (see [NixOS module](#nixos-module)).
+The APIs' answers are always in UTC. The [relative dates](cli.md#relative-dates) of the `vota ballot` client (`3d`, `+1d`) are computed on the client in UTC, not in this zone. On NixOS the module's default is the system's zone instead of `UTC` (see [NixOS module](#nixos-module)).
 
 ### `trusted_proxies`
 

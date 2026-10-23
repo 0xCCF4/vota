@@ -303,7 +303,7 @@ If a template still fails at request time (it shouldn't, after the trial render)
 
 ## Caching
 
-Theme stylesheets and logos are served with `Cache-Control: public, max-age=3600` and have no versioned URLs. After you change a stylesheet or logo and restart, browsers may keep the old file for up to an hour. If a change must show at once, publish it under a new Theme or logo name and point the Ballots at it. The app's own script and stylesheet are referenced by content version (`?v=…`) and cached for a year under it; a request without the current version gets the one-hour cache.
+Theme stylesheets and logos are served with `Cache-Control: public, max-age=3600` and have no versioned URLs. After you change a stylesheet or logo and restart, browsers may keep the old file for up to an hour. If a change must show at once, publish it under a new Theme or logo name and point the Ballots at it. The app's own script and stylesheet are referenced by content version (the script's modules under `/assets/app/<version>/`, the stylesheet as `ballot.css?v=<version>`) and cached for a year under it; a request with another version gets the one-hour cache.
 
 ## Worked example: the `acme` Theme
 

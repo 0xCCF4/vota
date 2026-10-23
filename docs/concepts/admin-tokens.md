@@ -16,7 +16,7 @@ An **Admin Token** is the only credential for the admin API. Whoever holds a val
 | Step | How | Notes |
 | ---- | --- | ----- |
 | Create | `vota admin-token create [--label …] [--expires-in …\|--expires-at …]` | Printed once on stdout. The server need not run. An expiry must lie in the future and be no later than `9999-12-31T23:59:59Z`. |
-| Use | `Authorization: Bearer vta_…` on every `/admin` request | Checked against the database on every request. The scheme `Bearer` may be written in any case. |
+| Use | `Authorization: Bearer vta_…` on every `/admin` request | Checked against the database on every request (after the [file tokens](#admin-tokens-from-files)). The scheme `Bearer` may be written in any case. |
 | List | `vota admin-token list [--json]` | ID, created, expiry, expired, last use (to the minute), label. Never the secret or its hash. |
 | Expire | automatically at `expires_at` (by the server's clock) | From that instant on it is refused like an unknown token. It stays listed as expired. |
 | Revoke | `vota admin-token revoke <ID>` or `--label <LABEL>` | Deleted from the database. It stops working at once, with no restart. |

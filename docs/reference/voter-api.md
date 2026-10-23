@@ -105,7 +105,7 @@ The checks run in this order:
 7. `revision` not the Ballot's current revision → `409 ballot_changed`: the admin changed the Ballot since the client fetched it.
 8. Malformed or duplicate IDs → `422`.
 9. A well-formed ID that is not one of this Ballot's current Options → `409 ballot_changed`. This is most likely an Option the admin replaced while the page was open. The answer is the same whether or not the ID exists on another Ballot.
-10. Wrong count for the Choice Mode → `422`.
+10. Wrong count for the Choice Mode (an empty list is fine only with `allow_no_option`) → `422`.
 
 The Response is then recorded in one conditional write, which re-checks the deadline, the Final lock and that the Ballot's revision is still the one sent (see [Ballot lifecycle](../concepts/ballot-lifecycle.md#concurrency-guarantees)). On success the answer is `200` with the updated voter view (as for `GET`). On an Editable Ballot a new Response replaces the old one: `answered_at` stays the time of the first, and `changed_at` moves.
 

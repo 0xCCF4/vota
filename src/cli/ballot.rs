@@ -2,10 +2,11 @@
 //! server. It builds requests from flags, sends them ([`connection`]) and prints
 //! the answers ([`render`]). The server is the only place input is checked:
 //! the client parses only what it needs to build the JSON (enum values, flag
-//! combinations).
+//! combinations, and relative dates, which [`dates`] turns into timestamps).
 
 mod body;
 mod connection;
+mod dates;
 mod render;
 
 use std::io::{IsTerminal as _, Read as _};
@@ -19,6 +20,7 @@ use reqwest::Method;
 use super::escape::{escape_json, printable};
 use body::{Clears, Fields};
 use connection::{Connection, ConnectionArgs};
+use dates::{Dates, Verb};
 
 #[derive(clap::Args)]
 pub(super) struct BallotArgs {
@@ -87,8 +89,13 @@ enum BallotCommand {
         /// The Ballot's ID.
         id: u64,
         /// The new Voting Deadline: RFC 3339, or without an offset local
-        /// time in the server's default time zone.
-        #[arg(long, value_name = "DATETIME", required = true)]
+        /// time in the server's default time zone; a duration from now
+        /// (`3d`); or `+` and a duration after the current one (`+1d`,
+        /// `+1m`). Units, combined without spaces (`2d12h`): min
+        /// (minutes), h (hours), d (days), w (weeks), m (calendar months),
+        /// y (years). Note: `m` is months here, unlike in the server's
+        /// configuration.
+        #[arg(long, value_name = "DATETIME|DURATION|+DURATION", required = true)]
         voting_deadline: String,
     },
     /// Delete a Ballot with its Response (DELETE /admin/ballots/{id}). In a
@@ -163,10 +170,14 @@ impl BallotArgs {
             }
         };
         match self.command {
-            BallotCommand::Create { fields, body } => {
+            BallotCommand::Create { mut fields, body } => {
                 let body = match body {
                     Some(path) => body::raw(&path)?,
-                    None => fields.into_body(None)?,
+                    None => {
+                        let (deadline, purge_date) = fields.dates_mut();
+                        resolve_dates(&connection, Verb::Create, deadline, purge_date).await?;
+                        fields.into_body(None)?
+                    }
                 };
                 let ballot = connection
                     .send(Method::POST, "admin/ballots", Some(body))
@@ -202,13 +213,17 @@ impl BallotArgs {
             }
             BallotCommand::Edit {
                 id,
-                fields,
+                mut fields,
                 clears,
                 body,
             } => {
                 let body = match body {
                     Some(path) => body::raw(&path)?,
-                    None => fields.into_body(Some(clears))?,
+                    None => {
+                        let (deadline, purge_date) = fields.dates_mut();
+                        resolve_dates(&connection, Verb::Edit(id), deadline, purge_date).await?;
+                        fields.into_body(Some(clears))?
+                    }
                 };
                 let reply = connection
                     .send(Method::PATCH, &format!("admin/ballots/{id}"), Some(body))
@@ -219,6 +234,14 @@ impl BallotArgs {
                 id,
                 voting_deadline,
             } => {
+                let mut voting_deadline = Some(voting_deadline);
+                resolve_dates(
+                    &connection,
+                    Verb::Extend(id),
+                    &mut voting_deadline,
+                    &mut None,
+                )
+                .await?;
                 let body = serde_json::json!({ "voting_deadline": voting_deadline });
                 let reply = connection
                     .send(
@@ -243,6 +266,51 @@ impl BallotArgs {
         }
         Ok(())
     }
+}
+
+/// Replaces relative values of the date flags (`3d`, `+7d`) with the UTC
+/// timestamps they name, and says so on stderr. A `+` relative to the
+/// Ballot's current Voting Deadline fetches the Ballot first.
+async fn resolve_dates(
+    connection: &Connection,
+    verb: Verb,
+    voting_deadline: &mut Option<String>,
+    purge_date: &mut Option<String>,
+) -> Result<(), Failure> {
+    let dates = Dates::parse(voting_deadline.as_deref(), purge_date.as_deref(), verb)?;
+    let current = match verb {
+        Verb::Edit(id) | Verb::Extend(id) if dates.needs_current_deadline() => {
+            Some(current_deadline(connection, id).await?)
+        }
+        _ => None,
+    };
+    let resolved = dates.resolve(chrono::Utc::now(), current)?;
+    for note in &resolved.notes {
+        eprintln!("{note}");
+    }
+    *voting_deadline = resolved.voting_deadline;
+    *purge_date = resolved.purge_date;
+    Ok(())
+}
+
+/// The Ballot's current Voting Deadline (`GET /admin/ballots/{id}`).
+async fn current_deadline(
+    connection: &Connection,
+    id: u64,
+) -> Result<chrono::DateTime<chrono::Utc>, Failure> {
+    let ballot = connection
+        .send(Method::GET, &format!("admin/ballots/{id}"), None)
+        .await?
+        .unwrap_or_default();
+    ballot["voting_deadline"]
+        .as_str()
+        .and_then(|deadline| deadline.parse().ok())
+        .ok_or_else(|| {
+            Failure::new(
+                1,
+                format!("unexpected response: Ballot {id} without a voting_deadline timestamp"),
+            )
+        })
 }
 
 /// In a terminal: shows the Ballot and asks. Without one: refused (exit 2),

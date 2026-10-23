@@ -7,7 +7,7 @@ Every Ballot has two dates: the **Voting Deadline**, which closes voting, and th
 - Given by the admin as RFC 3339 with an explicit offset, or as a local date-time without offset in the server's [`default_time_zone`](../reference/configuration.md#default_time_zone) (see [Conventions](../reference/admin-api.md#conventions)); stored in UTC to the millisecond.
 - **Exclusive**: voting is open while `now < voting_deadline`. At the deadline itself it is closed. A Response submitted at that instant gets `409 voting_closed` (API) or `409` and "Voting has closed. Your answer could not be accepted." (form).
 - Must lie in the future when it is set (create, edit, extend), and no later than now + [`max_date_horizon`](../reference/configuration.md#max_date_horizon) (default one year). A date exactly at the horizon is accepted.
-- The voter sees it on the page in the configured [`default_time_zone`](../reference/configuration.md#default_time_zone). With JavaScript it is shown in their local time, with a countdown.
+- The voter sees it on the page in the configured [`default_time_zone`](../reference/configuration.md#default_time_zone). With JavaScript it is shown in their local time, with a countdown if the Theme has a [countdown placeholder](../guides/themes-and-logos.md#what-ballothtml-must-keep).
 
 ### Changing the deadline
 

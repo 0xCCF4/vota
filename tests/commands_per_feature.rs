@@ -1,6 +1,6 @@
 //! Which commands a build of `vota` has follows its cargo features: `serve`
 //! and `admin-token` need `server`, `ballot` needs `client`, and
-//! `completions` and `--version` work in every build. A command whose feature
+//! `completions`, `man` and `--version` work in every build. A command whose feature
 //! is off doesn't appear in `--help` and is refused as unknown.
 
 use assert_cmd::Command;
@@ -39,7 +39,7 @@ fn help_lists_exactly_the_commands_of_the_enabled_features() {
     if cfg!(feature = "client") {
         expected.push("ballot");
     }
-    expected.extend(["completions", "help"]);
+    expected.extend(["completions", "man", "help"]);
 
     assert_eq!(listed_commands(), expected);
 }

@@ -47,12 +47,17 @@ pub(super) struct Fields {
     submission_mode: Option<SubmissionMode>,
     /// Voting Deadline: RFC 3339, e.g. 2026-12-01T12:00:00+01:00; without
     /// an offset (2026-12-01T12:00) it is local time in the server's
-    /// default time zone.
-    #[arg(long, value_name = "DATETIME")]
+    /// default time zone. Or a duration from now, e.g. `3d`, `1m2w`; on
+    /// `edit`, `+1d` is a day after the current Voting Deadline. Units,
+    /// combined without spaces (`2d12h`): min (minutes), h (hours), d
+    /// (days), w (weeks), m (calendar months), y (years). Note: `m` is
+    /// months here, unlike in the server's configuration.
+    #[arg(long, value_name = "DATETIME|DURATION|+DURATION")]
     voting_deadline: Option<String>,
-    /// Purge Date: RFC 3339, or without an offset local time in the
-    /// server's default time zone.
-    #[arg(long, value_name = "DATETIME")]
+    /// Purge Date: as --voting-deadline (a duration is from now), or `+`
+    /// and a duration after the Voting Deadline, e.g. `+7d`: the one given
+    /// in the same command, else (on `edit`) the Ballot's current one.
+    #[arg(long, value_name = "DATETIME|DURATION|+DURATION")]
     purge_date: Option<String>,
     /// An Option's label for the Fallback; repeat it for more than one.
     #[arg(long = "fallback", value_name = "LABEL")]
@@ -113,6 +118,12 @@ enum SubmissionMode {
 }
 
 impl Fields {
+    /// The Voting Deadline and Purge Date flags, for resolving relative
+    /// values before [`Self::into_body`].
+    pub(super) fn dates_mut(&mut self) -> (&mut Option<String>, &mut Option<String>) {
+        (&mut self.voting_deadline, &mut self.purge_date)
+    }
+
     /// The JSON body: one key per given flag (and `null` per `--clear-*`
     /// flag); a field without a flag is left out.
     pub(super) fn into_body(self, clears: Option<Clears>) -> Result<Vec<u8>, Failure> {

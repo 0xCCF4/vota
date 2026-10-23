@@ -622,7 +622,14 @@ fn other_values_go_to_the_server_as_given() {
     let output = admin
         .ballot()
         .args(["create", "--title", "T", "--option", "A", "--option", "B"])
-        .args(["--voting-deadline", "next friday", "--accent-color", "red"])
+        // Starts like a date, so it is a timestamp for the server, which
+        // refuses the space (anything else is a duration for the client).
+        .args([
+            "--voting-deadline",
+            "2026-12-01 12:00",
+            "--accent-color",
+            "red",
+        ])
         .output()
         .unwrap();
 
