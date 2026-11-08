@@ -116,7 +116,7 @@ vota --config vota.toml admin-token create --label ci --expires-in 90days
 stdout (shortened here):
 
 ```text
-vta_AsUKO…
+vta_EXAMPLE…
 ```
 
 stderr:
@@ -267,7 +267,7 @@ Prints a new Admin Token on stdout, for an [Admin Token file](configuration.md#a
 
 ```text
 $ vota admin-token generate
-vta_XVrvwXzowx8k2P8D5tlMcVWLWDwuaaqHeiCRMszgqtQ
+vta_EXAMPLE-not-a-real-token-for-docs-only-BBBA
 ```
 
 Write it straight into the secret, e.g. `vota admin-token generate > admin-token` (with `umask 077`), or into an agenix secret (see [Deployment: NixOS](../guides/deployment.md#admin-tokens-from-files-agenix)). On a machine without a full `vota` build, this shell one-liner (OpenSSL and GNU coreutils' `basenc`) prints a token of the same format: 32 random bytes, base64url without the `=` padding.

@@ -550,7 +550,7 @@ The configuration holds no secret, so it may live in the world-readable store; A
 ```console
 $ sudo vota-admin-token create --label "survey scripts" --expires-in 180days
 Created Admin Token 2. It is shown only this once; store it securely.
-vta_XEVBC9gGy8uHz6wlJPAHJUKh5zB3SIezB43Yp21bCtQ
+vta_EXAMPLE-not-a-real-token-for-docs-only-AAAA
 $ sudo vota-admin-token list
 ID  CREATED               EXPIRES               EXPIRED  LAST-USED             LABEL
 1   2026-10-20T11:12:28Z  never                 no       2026-10-20T11:12:46Z  vm-test
