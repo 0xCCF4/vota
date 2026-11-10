@@ -23,7 +23,7 @@ jobs:
       # Vota: actions-rs/toolchain replaced by
       # actions-rust-lang/setup-rust-toolchain, as in ci.yaml (archived, too old
       # to run; actionlint rejects it).
-      - uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v2.0.1
         with:
           toolchain: nightly
 
