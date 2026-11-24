@@ -79,7 +79,7 @@ jobs:
           - nixos-unstable
     steps:
       - uses: actions/checkout@v7
-      - uses: cachix/install-nix-action@v31
+      - uses: cachix/install-nix-action@v32
       # Vota: 30m instead of frostx's 5m. The package runs the whole test suite
       # in its checkPhase; a cold build took 12-13 minutes on 4 cores locally.
       - run: timeout 30m nix build -L --no-update-lock-file --no-write-lock-file --override-input nixpkgs github:nixos/nixpkgs/${{ matrix.nixpkgs }}
@@ -94,7 +94,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-      - uses: cachix/install-nix-action@v31
+      - uses: cachix/install-nix-action@v32
       - run: nix build .#checks.x86_64-linux.nixos-vm -L
 
   # Vota: not in frostx. The voting page script's browser check
@@ -109,7 +109,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - uses: cachix/install-nix-action@v31
+      - uses: cachix/install-nix-action@v32
       - name: Install Rust
         uses: actions-rust-lang/setup-rust-toolchain@v2.0.1
         with:

@@ -55,6 +55,6 @@ jobs:
           - nixos-unstable
     steps:
       - uses: actions/checkout@v7
-      - uses: cachix/install-nix-action@v31
+      - uses: cachix/install-nix-action@v32
       # Vota: 30m instead of 5m, as in ci.yaml (the build runs the test suite).
       - run: timeout 30m nix build github:0xCCF4/vota -L --no-update-lock-file --no-write-lock-file --override-input nixpkgs github:nixos/nixpkgs/${{ matrix.nixpkgs }}
